@@ -1163,6 +1163,7 @@ class Separator(QMainWindow):
 
         files = bar.addMenu('Fisier')
         add(files, 'Deschide folder clipuri...', self.choose_source, ['Ctrl+O'])
+        add(files, 'Inchide sesiunea (ramane salvata)', self.close_session, ['Ctrl+W'])
         self.recent_menu = files.addMenu('Sesiuni recente')
         self.recent_menu.aboutToShow.connect(self.fill_recent_menu)
         add(files, 'Schimba destinatia...', self.choose_dest)
@@ -1242,23 +1243,53 @@ class Separator(QMainWindow):
         except (OSError, ValueError):
             pass
         if self.source and str(self.source) in paths:
-            self.source = self.view_dir = None
-            self.all_clips, self.cats, self.undo_stack = [], [], []
-            self.model.set_clips([])
-            self.release_preview({self.loaded_preview})
-            self.rebuild_categories()
-            self.undo_btn.setEnabled(False)
-            self.progress.setValue(0)
-            self.view_label.setText('Deschide folderul cu clipurile transcodate')
-            self.back_btn.hide()
-            self.info.setText('')
+            self.clear_view()
+        self.fill_recent_box()
+        self.save_settings()
+
+    def close_session(self):
+        """Inchide sesiunea si lasa aplicatia goala; sesiunea ramane salvata in Sesiuni recente."""
+        if not self.source:
+            return self.statusBar().showMessage('Nicio sesiune deschisa', 4000)
+        if self.moving:
+            return QMessageBox.information(self, 'Mutare in curs', 'Asteapta sa se termine mutarea fisierelor.')
+        name = self.source.name
+        self.settings.pop('ultima_sursa', None)  # la urmatoarea pornire aplicatia incepe goala
+        self.clear_view()
+        self.fill_recent_box()
+        self.save_settings()
+        self.statusBar().showMessage(f'Sesiunea {name} e inchisa si salvata; o redeschizi din Fisier > Sesiuni recente', 8000)
+
+    def clear_view(self):
+        self.thumb_pool.clear()
+        self.pending.clear()
+        self.source = self.view_dir = None
+        self.all_clips, self.cats, self.undo_stack = [], [], []
+        self.sync_follow, self.sync_partial = set(), set()
+        self.model.set_clips([])
+        self.release_preview({self.loaded_preview})
+        self.update_preview_lut(None)
+        self.lut_view.clear()
+        self.wave.set_wave(None, '')
+        self.rebuild_categories()
+        self.fill_lut_box(self.lut_box, '')
+        self.undo_btn.setEnabled(False)
+        self.progress.setMaximum(1)
+        self.progress.setValue(0)
+        self.view_label.setText('Nicio sesiune deschisa: deschide un folder cu clipuri (Cmd+O)' if MAC else
+                                'Nicio sesiune deschisa: deschide un folder cu clipuri (Ctrl+O)')
+        self.back_btn.hide()
+        self.info.setText('')
+        self.free_label.setText('')
+        self.dest_btn.setText('Destinatie: -')
+
+    def fill_recent_box(self):
         self.recent.blockSignals(True)
         self.recent.clear()
         for path in self.settings['recente']:
             self.recent.addItem(f'{Path(path).parent.name} / {Path(path).name}', path)
         self.recent.setCurrentIndex(-1 if not self.source else 0)
         self.recent.blockSignals(False)
-        self.save_settings()
 
     def forget_current_session(self):
         if not self.source:

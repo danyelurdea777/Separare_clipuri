@@ -282,6 +282,12 @@ try:
           and w.model.rowCount() == 0 and (src4 / 'DAN0002.MP4').exists(), 'sesiunea stearsa, fisierele raman')
     w.open_source(str(src3))
     check(w.model.rowCount() == 3, 'alta sesiune se deschide normal dupa stergere')
+    cats_before = [c['nume'] for c in w.cats]
+    w.close_session()
+    check(w.source is None and w.model.rowCount() == 0 and not w.cats and 'ultima_sursa' not in w.settings
+          and str(src3) in w.settings['proiecte'] and str(src3) in w.settings['recente'], 'sesiunea inchisa, dar salvata')
+    w.open_source(str(src3))
+    check(w.model.rowCount() == 3 and [c['nume'] for c in w.cats] == cats_before, 'sesiunea redeschisa e cum a ramas')
     w.settings['lut_gamma'] = {}
     w.grab().save(str(TMP / 'captura.png'))
     w.close()

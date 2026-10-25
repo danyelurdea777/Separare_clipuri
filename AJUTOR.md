@@ -98,7 +98,9 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 
 - Toate functiile sunt si in meniul de sus: **Fisier, Editare, Foldere, Vizualizare, Previzualizare, Ajutor**, cu scurtaturile lor.
 - O **sesiune** = un folder de clipuri deschis, cu folderele alese, LUT-ul si istoricul de anulare.
-- **Fisier > Sterge sesiunea curenta** o uita pe cea deschisa; **Fisier > Sterge sesiuni...** arata lista, cu cele al caror folder nu mai exista deja bifate. Clipurile si folderele de pe disc nu se ating.
+- Sesiunile se salveaza singure, dupa fiecare schimbare. Ca sa treci la alt proiect deschizi alt folder; cel vechi ramane in **Fisier > Sesiuni recente** si in lista de sus.
+- **Fisier > Inchide sesiunea** (Cmd+W) goleste fereastra ca sa incepi de pe curat, fara sa uite nimic; si la urmatoarea pornire aplicatia porneste goala.
+- **Fisier > Sterge sesiunea curenta** o uita definitiv pe cea deschisa; **Fisier > Sterge sesiuni...** arata lista, cu cele al caror folder nu mai exista deja bifate. Clipurile si folderele de pe disc nu se ating.
 - **Fisier > Goleste miniaturile salvate** elibereaza spatiul ocupat de miniaturi; se refac singure cand deschizi un folder.
 - **Cmd+1 / 2 / 3**: video si audio / doar video / doar audio.
 
