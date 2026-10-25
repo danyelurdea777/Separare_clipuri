@@ -79,7 +79,7 @@ def ui(text):
     if MAC:
         return text
     return (text.replace('Cmd', 'Ctrl').replace('Finder', 'Explorer').replace('Cosul macOS', 'Cosul de reciclare')
-            .replace(ui('in IINA'), 'in player').replace(ui('IINA'), 'player'))
+            .replace('in IINA', 'in player').replace('IINA', 'player'))
 
 
 def open_path(path, reveal=False):

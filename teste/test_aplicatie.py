@@ -36,6 +36,11 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
+# textele pentru Windows, verificate pe orice platforma
+mac = main.MAC; main.MAC = False
+check(main.ui('Cmd+Z in Finder, Deschide in IINA') == 'Ctrl+Z in Explorer, Deschide in player', 'texte Windows')
+main.MAC = mac
+
 assert main.FFMPEG and main.FFPROBE, 'ffmpeg si ffprobe sunt necesare pentru test'
 root = TMP / 'proiect'; src = root / 'Prores'; src.mkdir(parents=True)
 for i, t in enumerate(['10:00:00', '10:01:10', '10:02:30', '11:30:00', '11:31:00', '13:00:00'], 1):
