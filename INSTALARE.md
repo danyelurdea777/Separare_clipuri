@@ -26,6 +26,8 @@ Scurtatura pe Desktop: click dreapta pe `SeparareClipuri.exe` > Send to > Deskto
 - Selectezi clipurile (click, Cmd/Ctrl+click, Shift+click sau tragi un dreptunghi), apoi apesi tasta folderului (1, 2, 3...) sau click pe folder.
 - **G** selecteaza tot momentul filmat (grupul), **Spatiu** reda clipul, **Cmd/Ctrl+Z** anuleaza ultima mutare.
 - **Selecteaza scurte** + **Cmd+Backspace** (Mac) sau **Delete** (Windows): testele de expunere merg in Cos.
+- Fisierele audio de la recorder (WAV) apar langa clipuri si se muta automat cu clipurile filmate in acelasi timp (marcaj **SYNC**).
+- Barele de pe miniaturi arata unde e sunet; **Q** reda partea cu sunet.
 - Ghidul complet: **F1** in aplicatie.
 
 ffmpeg: Windows, build LGPL de la BtbN/FFmpeg-Builds; Mac, build static de la ffmpeg.martin-riedl.de. Licentele ffmpeg se aplica acestor executabile.

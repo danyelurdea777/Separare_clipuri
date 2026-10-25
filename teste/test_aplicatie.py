@@ -135,6 +135,59 @@ try:
     w.select_short(); w.trash_selection()
     for _, d in w.undo_stack[-1]['perechi']:
         os.remove(d)  # curatenie: nu lasam fisiere de test in Cos
+
+    # ---------- audio: WAV de la recorder (BWF), sincron cu clipurile dupa ora
+    from datetime import datetime
+    src2 = TMP / 'proiect2' / 'Clipuri'; src2.mkdir(parents=True)
+    epoch = lambda hms: datetime.fromisoformat(f'2026-04-26T{hms}+00:00').timestamp()
+    def video(name, hms, sound=True):
+        args = [main.FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25:duration=4']
+        args += ['-f', 'lavfi', '-i', 'sine=d=4', '-c:a', 'pcm_s16le'] if sound else []
+        subprocess.run(args + ['-c:v', 'prores_ks', '-metadata', f'creation_time=2026-04-26T{hms}Z', '-f', 'mov', '-y',
+                               str(src2 / name)], check=True, capture_output=True)
+    def bwf(name, start, seconds):
+        local = datetime.fromtimestamp(start)  # recorderul scrie ora locala
+        subprocess.run([main.FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', f'sine=f=100:sample_rate=1000:d={seconds}',
+                        '-c:a', 'pcm_s16le', '-write_bext', '1', '-metadata', f'origination_date={local:%Y-%m-%d}',
+                        '-metadata', f'origination_time={local:%H:%M:%S}', '-y', str(src2 / name)], check=True, capture_output=True)
+    video('V1.MP4', '10:00:00'); video('V2.MP4', '10:01:10'); video('V3.MP4', '11:30:00', sound=False)
+    bwf('ZOOM0001.WAV', epoch('09:59:50'), 90)      # acopera V1 si V2
+    bwf('ZOOM0002.WAV', epoch('10:01:00'), 5400)    # acopera V2 ... V3
+    w.open_source(str(src2))
+    by = {c.name: c for c in w.all_clips}
+    check(sorted(by) == ['V1.MP4', 'V2.MP4', 'V3.MP4', 'ZOOM0001.WAV', 'ZOOM0002.WAV'], f'audio in grila ({sorted(by)})')
+    check(by['ZOOM0001.WAV'].kind == 'audio' and abs(by['ZOOM0001.WAV'].created - epoch('09:59:50')) < 2, 'ora din BWF citita corect')
+    check([by[n].group for n in ('V1.MP4', 'V2.MP4', 'V3.MP4', 'ZOOM0001.WAV', 'ZOOM0002.WAV')] == [1, 1, 2, 1, 1],
+          f'audio in grupul clipurilor ({[by[n].group for n in sorted(by)]})')
+    check(wait(lambda: not w.pending, 120), 'forme de unda si niveluri gata')
+    check(all(main.wave_file(by[n].key).exists() for n in ('ZOOM0001.WAV', 'ZOOM0002.WAV')), 'forma de unda pentru audio')
+    check(bool(by['V1.MP4'].levels) and max(by['V1.MP4'].levels) > -40, f'nivel sunet masurat ({by["V1.MP4"].levels})')
+    check(by['V3.MP4'].levels == [] and not by['V3.MP4'].audio, 'clip fara sunet recunoscut')
+    w.kind_box.setCurrentIndex(2)
+    check(sorted(c.name for c in w.model.clips) == ['ZOOM0001.WAV', 'ZOOM0002.WAV'], 'filtru doar audio')
+    w.kind_box.setCurrentIndex(1)
+    check(sorted(c.name for c in w.model.clips) == ['V1.MP4', 'V2.MP4', 'V3.MP4'], 'filtru doar video')
+    w.kind_box.setCurrentIndex(0)
+    w.restore_selection({src2 / 'V1.MP4', src2 / 'V2.MP4'})
+    check(w.sync_follow == {by['ZOOM0001.WAV'].key} and w.sync_partial == {by['ZOOM0002.WAV'].key}, 'SYNC si SYNC partial marcate')
+    w.grab().save(str(TMP / 'captura_audio.png'))
+    key(Qt.Key.Key_Q)  # partea cu sunet: nu trebuie sa dea eroare
+    w.move_selection(0); wait(lambda: not w.moving)
+    acasa2 = TMP / 'proiect2' / 'Acasa'
+    check(sorted(p.name for p in acasa2.iterdir()) == ['V1.MP4', 'V2.MP4', 'ZOOM0001.WAV'], 'audio sincron mutat cu clipurile')
+    check((src2 / 'ZOOM0002.WAV').exists(), 'audio partial ramane')
+    w.restore_selection({src2 / 'V3.MP4'})
+    check(w.sync_follow == {by['ZOOM0002.WAV'].key}, 'audio partial devine SYNC la ultimul clip')
+    w.move_selection(1); wait(lambda: not w.moving)
+    check(w.report_box.isVisible() and 'Biserica: 2' in w.report_box.text(), 'rezumat la final, cu audio numarat')
+    w.report_box.close()
+    check(sorted(p.name for p in (TMP / 'proiect2' / 'Biserica').iterdir()) == ['V3.MP4', 'ZOOM0002.WAV'], 'audio lung mutat cu ultimul clip')
+    w.undo(); wait(lambda: not w.moving)
+    check((src2 / 'V3.MP4').exists() and (src2 / 'ZOOM0002.WAV').exists(), 'anularea readuce si audio-ul')
+    w.audio_follow.setChecked(False)
+    w.restore_selection({src2 / 'V3.MP4'})
+    check(not w.sync_follow, 'fara bifa, audio-ul nu mai urmeaza clipurile')
+    w.audio_follow.setChecked(True)
     w.grab().save(str(TMP / 'captura.png'))
     w.close()
 except Exception:

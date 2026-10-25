@@ -1,5 +1,5 @@
 """Separare Clipuri: muti clipurile transcodate in foldere pe categorii, din miniaturi, ca in Adobe Bridge."""
-import sys, os, json, shutil, subprocess, hashlib, time, errno
+import sys, os, re, json, shutil, subprocess, hashlib, time, errno
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -42,6 +42,9 @@ META_FILE = DATA / 'metadate.json'
 JOURNAL_FILE = DATA / 'jurnal.jsonl'
 
 EXT = {'.mp4', '.mov', '.m4v', '.mxf', '.mkv', '.avi', '.mts', '.m2ts', '.insv'}
+AUDIO_EXT = {'.wav', '.bwf', '.mp3', '.m4a', '.aac', '.flac', '.aif', '.aiff', '.ogg'}
+MEDIA_EXT = EXT | AUDIO_EXT
+SYNC_SLACK = 5  # secunde de toleranta cand potrivim audio cu clipurile dupa ora
 # fisiere insotitoare cu acelasi nume (DJI .LRF/.SRT, Sony .XML, GoPro .THM), mutate impreuna cu clipul
 SIDECAR = {'.xml', '.lrf', '.srt', '.thm', '.lrv', '.xmp'}
 FRAMES = 8      # cadre per clip pentru derularea la trecerea mouse-ului
@@ -141,13 +144,27 @@ class Clip:
     height: int = 0
     fps: float = 0.0
     audio: str = ''
+    sample_rate: int = 0
+    channels: int = 0
     group: int = 0
+    levels: list = None     # nivel de sunet (dB) in FRAMES puncte din clip; [] = fara sunet
 
     @property
     def name(self):
         return self.path.name
 
+    @property
+    def kind(self):
+        return 'audio' if self.path.suffix.lower() in AUDIO_EXT else 'video'
+
+    @property
+    def end(self):
+        return self.created + self.duration
+
     def badge(self):
+        if self.kind == 'audio':
+            rate = f' {self.sample_rate / 1000:g}k' if self.sample_rate else ''
+            return f'AUDIO{rate} {self.channels}ch' if self.channels else f'AUDIO{rate}'
         res = '8K' if self.width >= 7000 else '6K' if self.width >= 5500 else '4K' if self.width >= 3800 else \
             '2.7K' if self.width >= 2700 else '1080' if self.width >= 1900 else f'{self.height}p' if self.height else ''
         fps = f' {self.fps:g}p' if self.fps else ''
@@ -156,19 +173,23 @@ class Clip:
 
 def probe(path):
     """Durata, codec, rezolutie si ora filmarii, citite cu ffprobe."""
-    meta = {'duration': 0.0, 'created': 0.0, 'codec': '', 'width': 0, 'height': 0, 'fps': 0.0, 'audio': ''}
+    meta = {'duration': 0.0, 'created': 0.0, 'codec': '', 'width': 0, 'height': 0, 'fps': 0.0, 'audio': '',
+            'sample_rate': 0, 'channels': 0}
     if not FFPROBE:
         return meta
     try:
         out = subprocess.run([FFPROBE, '-v', 'error', '-show_entries',
-                              'format=duration:format_tags=creation_time:stream=codec_type,codec_name,width,height,r_frame_rate',
+                              'format=duration:format_tags=creation_time,date:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels',
                               '-of', 'json', str(path)], capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW).stdout
         data = json.loads(out or '{}')
     except (OSError, subprocess.SubprocessError, ValueError):
         return meta
     fmt = data.get('format', {})
     meta['duration'] = float(fmt.get('duration') or 0)
-    stamp = (fmt.get('tags') or {}).get('creation_time')
+    tags = fmt.get('tags') or {}
+    stamp = tags.get('creation_time')
+    if stamp and len(stamp) == 8 and tags.get('date'):
+        stamp = f"{tags['date']}T{stamp}"  # BWF: data si ora separate, fara fus orar = ora locala
     if stamp:
         try:
             meta['created'] = datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
@@ -185,6 +206,8 @@ def probe(path):
                 pass
         elif stream.get('codec_type') == 'audio' and not meta['audio']:
             meta['audio'] = stream.get('codec_name', '')
+            meta['sample_rate'] = int(stream.get('sample_rate') or 0)
+            meta['channels'] = int(stream.get('channels') or 0)
     return meta
 
 
@@ -200,7 +223,7 @@ def list_clips(folder):
     except OSError:
         return clips
     for entry in entries:
-        if entry.name.startswith('.') or Path(entry.name).suffix.lower() not in EXT:
+        if entry.name.startswith('.') or Path(entry.name).suffix.lower() not in MEDIA_EXT:
             continue
         try:
             if not entry.is_file():
@@ -212,9 +235,9 @@ def list_clips(folder):
     return clips
 
 
-def count_videos(folder):
+def count_media(folder):
     try:
-        return sum(1 for e in os.scandir(folder) if not e.name.startswith('.') and Path(e.name).suffix.lower() in EXT)
+        return sum(1 for e in os.scandir(folder) if not e.name.startswith('.') and Path(e.name).suffix.lower() in MEDIA_EXT)
     except OSError:
         return 0
 
@@ -232,15 +255,32 @@ def frame_file(key, index):
     return THUMBS / f'{key}_{index}.jpg'
 
 
+def wave_file(key):
+    return THUMBS / f'{key}_unda.png'
+
+
+def overlap(a, b):
+    """Secundele in care doua inregistrari se suprapun (cu toleranta SYNC_SLACK)."""
+    return min(a.end, b.end) - max(a.created, b.created) + SYNC_SLACK
+
+
 def assign_groups(clips, gap_minutes):
-    """Grupuri de filmare: un grup nou incepe dupa o pauza mai mare decat gap_minutes."""
-    ordered = sorted(clips, key=lambda c: (c.created, c.name))
+    """Grupuri de filmare: un grup nou incepe dupa o pauza mai mare decat gap_minutes.
+    Inregistrarile audio lungi nu leaga grupurile intre ele: primesc grupul clipului video cu care se suprapun."""
+    videos = [c for c in clips if c.kind == 'video']
+    sounds = [c for c in clips if c.kind == 'audio'] if videos else []
+    ordered = sorted(videos or clips, key=lambda c: (c.created, c.name))
     group, last_end = 0, None
     for clip in ordered:
         if last_end is not None and clip.created - last_end > gap_minutes * 60:
             group += 1
         clip.group = group + 1
         last_end = max(last_end or 0, clip.created + clip.duration)
+    for sound in sounds:
+        best = max(videos, key=lambda v: (overlap(sound, v), -abs(v.created - sound.created)))
+        if overlap(sound, best) <= 0:
+            best = min(videos, key=lambda v: abs(v.created - sound.created))
+        sound.group = best.group
 
 
 def group_color(group):
@@ -254,6 +294,8 @@ class Signals(QObject):
     frame_failed = Signal(str, int)
     move_progress = Signal(int, int, int, str)
     move_done = Signal(int, list)
+    wave_done = Signal(str)
+    levels_done = Signal(str, list)
 
 
 class FrameJob(QRunnable):
@@ -277,6 +319,48 @@ class FrameJob(QRunnable):
             self.signals.frame_done.emit(self.key, self.index)
         else:
             self.signals.frame_failed.emit(self.key, self.index)
+
+
+class WaveJob(QRunnable):
+    """Forma de unda a sunetului (pentru fisiere audio si pentru previzualizare)."""
+    def __init__(self, key, path, signals):
+        super().__init__()
+        self.key, self.path, self.signals = key, path, signals
+
+    def run(self):
+        target = wave_file(self.key)
+        try:
+            if not target.exists():
+                tmp = target.with_name(target.stem + '.part.png')
+                subprocess.run([FFMPEG, '-v', 'error', '-nostdin', '-i', str(self.path), '-vn', '-filter_complex',
+                                '[0:a]aformat=channel_layouts=mono,showwavespic=s=1200x160:colors=0x74e1ff',
+                                '-frames:v', '1', '-y', str(tmp)], capture_output=True, timeout=300, creationflags=NO_WINDOW)
+                if tmp.exists() and tmp.stat().st_size:
+                    tmp.replace(target)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        self.signals.wave_done.emit(self.key)
+
+
+class LevelJob(QRunnable):
+    """Nivelul mediu al sunetului (dB) pe cate o secunda, in aceleasi puncte ca miniaturile."""
+    def __init__(self, key, path, duration, signals):
+        super().__init__()
+        self.key, self.path, self.duration, self.signals = key, path, duration, signals
+
+    def run(self):
+        levels = []
+        for i in range(FRAMES):
+            start = max(0.0, self.duration * (i + 0.5) / FRAMES - 0.5)
+            try:
+                err = subprocess.run([FFMPEG, '-v', 'info', '-nostdin', '-ss', f'{start:.2f}', '-i', str(self.path), '-t', '1',
+                                      '-vn', '-af', 'volumedetect', '-f', 'null', '-'],
+                                     capture_output=True, text=True, errors='replace', timeout=60, creationflags=NO_WINDOW).stderr
+            except (OSError, subprocess.SubprocessError):
+                err = ''
+            found = re.search(r'mean_volume: (-?[\d.]+|-inf) dB', err)
+            levels.append(-91.0 if not found or found.group(1) == '-inf' else float(found.group(1)))
+        self.signals.levels_done.emit(self.key, levels)
 
 
 def rename_retry(src, dst):
@@ -339,6 +423,9 @@ class ClipModel(QAbstractListModel):
             return clip
         if role == Qt.ItemDataRole.ToolTipRole:
             when = datetime.fromtimestamp(clip.created).strftime('%d.%m.%Y %H:%M:%S') if clip.created else '?'
+            if clip.kind == 'audio':
+                return (f'{clip.name}\n{human_dur(clip.duration)} · {human_size(clip.size)} · {clip.audio} '
+                        f'{clip.sample_rate} Hz {clip.channels} canale\nInregistrat: {when} · Grup {clip.group}')
             return (f'{clip.name}\n{human_dur(clip.duration)} · {human_size(clip.size)} · {clip.codec} {clip.width}x{clip.height} '
                     f'{clip.fps:g} fps\nFilmat: {when} · Grup {clip.group}')
         return None
@@ -438,7 +525,8 @@ class ClipDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         r = option.rect.adjusted(4, 4, -4, -4)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#2a4d63' if selected else '#1c232c'))
+        audio = clip.kind == 'audio'
+        painter.setBrush(QColor('#2a4d63' if selected else '#2a2440' if audio else '#1c232c'))
         painter.drawRoundedRect(r, 6, 6)
         img = QRect(r.x(), r.y(), r.width(), int(r.width() * 9 / 16))
         hovering = grid.hover_row == index.row()
@@ -446,7 +534,9 @@ class ClipDelegate(QStyledItemDelegate):
         pix = self.win.frame_pixmap(clip, frame)
         painter.setBrush(QColor('#0b0e12'))
         painter.drawRect(img)
-        if pix:
+        if pix and audio:
+            painter.drawPixmap(img.adjusted(4, 18, -4, -18), pix)
+        elif pix:
             scaled = pix.scaled(img.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             painter.drawPixmap(img.x() + (img.width() - scaled.width()) // 2, img.y() + (img.height() - scaled.height()) // 2, scaled)
         else:
@@ -454,6 +544,10 @@ class ClipDelegate(QStyledItemDelegate):
             painter.drawText(img, Qt.AlignmentFlag.AlignCenter, 'se pregateste...')
         if hovering:
             painter.fillRect(QRect(img.x(), img.bottom() - 3, int(img.width() * grid.hover_frac), 4), QColor('#ffd166'))
+            if audio:
+                x = img.x() + int(img.width() * grid.hover_frac)
+                painter.fillRect(QRect(x - 1, img.y(), 2, img.height()), QColor('#ffd166'))
+        self.paint_levels(painter, clip, img)
         # banda colorata a grupului de filmare
         painter.fillRect(QRect(r.x(), r.y(), r.width(), 5), group_color(clip.group))
         small = QFont(painter.font())
@@ -485,11 +579,58 @@ class ClipDelegate(QStyledItemDelegate):
         when = datetime.fromtimestamp(clip.created).strftime('%H:%M:%S') if clip.created else ''
         painter.drawText(QRect(r.x() + 6, text_top + 20, r.width() - 12, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                          f'{when}   {human_size(clip.size)}')
+        if clip.key in self.win.sync_follow or clip.key in self.win.sync_partial:
+            # audio inregistrat in acelasi timp cu selectia
+            follow = clip.key in self.win.sync_follow
+            painter.setPen(QPen(QColor('#ff9f43'), 3 if follow else 2, Qt.PenStyle.SolidLine if follow else Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6)
+            label = 'SYNC' if follow else 'SYNC partial'
+            lw = fm.horizontalAdvance(label) + 10
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor('#ff9f43'))
+            painter.drawRoundedRect(QRect(img.right() - lw - 4, img.y() + 9, lw, fm.height() + 2), 4, 4)
+            painter.setPen(QColor('#15191f'))
+            painter.setFont(small)
+            painter.drawText(QRect(img.right() - lw + 1, img.y() + 10, lw, fm.height()), Qt.AlignmentFlag.AlignLeft, label)
         if selected:
             painter.setPen(QPen(QColor('#74e1ff'), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6)
         painter.restore()
+
+    def paint_levels(self, painter, clip, img):
+        """Bare de nivel al sunetului in coltul miniaturii; eticheta pentru clipurile fara sunet sau linistite."""
+        small = QFont(painter.font())
+        small.setPointSize(9)
+        small.setBold(True)
+        fm = QFontMetrics(small)
+        if clip.kind == 'video' and not clip.audio and clip.duration:
+            label, color = 'FARA SUNET', '#c94f4f'
+        elif clip.levels and max(clip.levels) < -55:
+            label, color = 'LINISTE', '#6b7280'
+        else:
+            label = None
+        if clip.levels:
+            bar_w, gap, top = 5, 2, img.bottom() - 30
+            x = img.right() - FRAMES * (bar_w + gap) - 4
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 150))
+            painter.drawRoundedRect(QRect(x - 4, top - 3, FRAMES * (bar_w + gap) + 6, 28), 3, 3)
+            for i, level in enumerate(clip.levels):
+                h = max(2, int(22 * min(1.0, max(0.0, (level + 60) / 60))))
+                color_bar = '#5d6b7a' if level < -50 else '#2f9e74' if level < -20 else '#ffd166' if level < -10 else '#ff6b6b'
+                painter.setBrush(QColor(color_bar))
+                painter.drawRect(QRect(x + i * (bar_w + gap), top + 22 - h, bar_w, h))
+        if label:
+            lw = fm.horizontalAdvance(label) + 10
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            box = QRect(img.x() + 4, img.bottom() - fm.height() - 8, lw, fm.height() + 2)
+            painter.drawRoundedRect(box, 4, 4)
+            painter.setPen(QColor('#ffffff'))
+            painter.setFont(small)
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
 
 
 # ---------------------------------------------------------------- butoanele de folder
@@ -518,6 +659,45 @@ class FolderButton(QPushButton):
         self.setDown(False)
         event.acceptProposedAction()
         self.dropped.emit()
+
+
+class WaveStrip(QWidget):
+    """Forma de unda a clipului curent, cu pozitia redarii; click sau tragere = salt in clip."""
+    seek = Signal(float)
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(64)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pix, self.text, self.frac, self.levels = None, '', 0.0, None
+
+    def set_wave(self, pix, text=''):
+        self.pix, self.text = pix, text
+        self.update()
+
+    def set_position(self, frac):
+        self.frac = frac
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor('#11151a'))
+        if self.pix:
+            p.drawPixmap(self.rect().adjusted(0, 4, 0, -4), self.pix)
+        else:
+            p.setPen(QColor('#5d6b7a'))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text)
+        x = int(self.width() * self.frac)
+        p.fillRect(QRect(0, 0, x, self.height()), QColor(255, 209, 102, 35))
+        p.fillRect(QRect(x - 1, 0, 2, self.height()), QColor('#ffd166'))
+        p.end()
+
+    def mousePressEvent(self, event):
+        self.seek.emit(min(1.0, max(0.0, event.position().x() / max(1, self.width()))))
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.mousePressEvent(event)
 
 
 class NullPlayer(QObject):
@@ -571,6 +751,14 @@ class Separator(QMainWindow):
         self.signals.frame_failed.connect(lambda k, i: self.pending.discard((k, i)))
         self.signals.move_progress.connect(self.move_progress)
         self.signals.move_done.connect(self.move_done)
+        self.signals.wave_done.connect(self.wave_ready)
+        self.signals.levels_done.connect(self.levels_ready)
+        self.sync_follow, self.sync_partial = set(), set()
+        self.meta_dirty = False
+        self.meta_timer = QTimer(self)
+        self.meta_timer.setInterval(10000)
+        self.meta_timer.timeout.connect(self.save_meta)
+        self.meta_timer.start()
         self.thumb_pool = QThreadPool(self)
         self.thumb_pool.setMaxThreadCount(max(2, min(4, (os.cpu_count() or 4) // 2)))
         self.move_pool = QThreadPool(self)
@@ -613,6 +801,11 @@ class Separator(QMainWindow):
         self.sort_box.setCurrentIndex(int(self.settings.get('sortare', 0)))
         self.sort_box.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.sort_box)
+        self.kind_box = QComboBox()
+        self.kind_box.addItems(['Video si audio', 'Doar video', 'Doar audio'])
+        self.kind_box.setCurrentIndex(int(self.settings.get('tip', 0)))
+        self.kind_box.currentIndexChanged.connect(self.apply_filter)
+        bar.addWidget(self.kind_box)
         bar.addWidget(QLabel('Grup nou dupa'))
         self.gap = QSpinBox()
         self.gap.setRange(1, 240)
@@ -678,6 +871,14 @@ class Separator(QMainWindow):
         hint.setWordWrap(True)
         hint.setStyleSheet('color:#7d8a98; font-size:11px;')
         ll.addWidget(hint)
+        self.audio_follow = QCheckBox('Audio sincron merge cu clipurile')
+        self.audio_follow.setChecked(bool(self.settings.get('audio_urmeaza', True)))
+        self.audio_follow.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.audio_follow.setToolTip('Fisierele audio inregistrate in acelasi timp cu clipurile selectate (marcate SYNC)\n'
+                                     'se muta impreuna cu ele. Cele marcate "SYNC partial" acopera si alte clipuri\n'
+                                     'nesortate inca, asa ca raman pana muti si ultimul clip cu care se suprapun.')
+        self.audio_follow.toggled.connect(lambda _: self.selection_changed())
+        ll.addWidget(self.audio_follow)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -738,10 +939,14 @@ class Separator(QMainWindow):
         self.player.durationChanged.connect(lambda n: self.slider.setRange(0, n))
         self.player.positionChanged.connect(self.position_changed)
         rl.addWidget(self.slider)
+        self.wave = WaveStrip()
+        self.wave.seek.connect(lambda f: self.player.setPosition(int(f * self.player.duration())))
+        rl.addWidget(self.wave)
         controls = QHBoxLayout()
         rl.addLayout(controls)
         self.play_btn = self.btn(controls, 'Reda / Pauza', self.toggle_play)
         self.play_btn.setToolTip('Spatiu')
+        self.btn(controls, 'Sunet (Q)', self.play_loudest).setToolTip('Q · reda de la cea mai puternica parte a sunetului (discurs, muzica)')
         self.time_label = QLabel('0:00 / 0:00')
         controls.addWidget(self.time_label)
         controls.addStretch()
@@ -813,7 +1018,7 @@ class Separator(QMainWindow):
         if not project:
             dest = self.source.parent
             existing = sorted(e.name for e in os.scandir(dest) if e.is_dir() and not e.name.startswith('.')
-                              and Path(e.path) != self.source and count_videos(e.path))
+                              and Path(e.path) != self.source and count_media(e.path))
             names = existing or self.settings['sabloane'].get(self.settings.get('sablon', DEFAULT_TEMPLATE), [])
             project = {'destinatie': str(dest), 'categorii': [{'nume': n, 'culoare': COLORS[i % len(COLORS)]} for i, n in enumerate(names)]}
             projects[str(self.source)] = project
@@ -868,9 +1073,13 @@ class Separator(QMainWindow):
             save_json(META_FILE, self.meta)
         for clip in clips:
             m = self.meta.get(clip.key, {})
-            for field in ('duration', 'codec', 'width', 'height', 'fps', 'audio'):
+            for field in ('duration', 'codec', 'width', 'height', 'fps', 'audio', 'sample_rate', 'channels'):
                 setattr(clip, field, m.get(field, getattr(clip, field)))
-            clip.created = m.get('created') or clip.mtime
+            # recorderele scriu ora modificarii la sfarsitul inregistrarii
+            clip.created = m.get('created') or (clip.mtime - clip.duration if clip.kind == 'audio' else clip.mtime)
+            clip.levels = m.get('niveluri')
+            if clip.levels is None and clip.kind == 'video' and 'audio' in m and not m['audio']:
+                clip.levels = []
             self.frames.setdefault(clip.key, {i for i in range(FRAMES) if frame_file(clip.key, i).exists()})
         self.all_clips = clips
         assign_groups(self.all_clips, self.gap.value())
@@ -890,7 +1099,8 @@ class Separator(QMainWindow):
 
     def apply_filter(self):
         text = self.search.text().strip().lower()
-        clips = [c for c in self.all_clips if text in c.name.lower()]
+        kind = {1: 'video', 2: 'audio'}.get(self.kind_box.currentIndex())
+        clips = [c for c in self.all_clips if text in c.name.lower() and (not kind or c.kind == kind)]
         order = self.sort_box.currentIndex()
         keys = [lambda c: (c.created, c.name), lambda c: c.name.lower(), lambda c: -c.duration, lambda c: -c.size]
         clips.sort(key=keys[order])
@@ -916,7 +1126,7 @@ class Separator(QMainWindow):
         if not self.source:
             return
         left = len(list_clips(self.source)) if self.view_dir != self.source else len(self.all_clips)
-        sorted_count = sum(count_videos(self.cat_dir(c)) for c in self.cats)
+        sorted_count = sum(count_media(self.cat_dir(c)) for c in self.cats)
         self.progress.setMaximum(max(1, left + sorted_count))
         self.progress.setValue(sorted_count)
         try:
@@ -940,7 +1150,7 @@ class Separator(QMainWindow):
             hl.setSpacing(3)
             b = FolderButton(self.grid)
             key = str((i + 1) % 10) if i < 10 else ' '
-            n = count_videos(self.cat_dir(cat))
+            n = count_media(self.cat_dir(cat))
             exists = self.cat_dir(cat).is_dir()
             b.setText(f'{key}   {cat["nume"]}' + (f'   ({n})' if n else '' if exists else '   (nou)'))
             color = QColor(cat.get('culoare', COLORS[0]))
@@ -1102,6 +1312,8 @@ class Separator(QMainWindow):
         dest = self.cat_dir(cat)
         if self.view_dir == dest:
             return
+        extra = self.linked_audio(clips)[0] if self.audio_follow.isChecked() else []
+        clips = clips + extra
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -1127,7 +1339,8 @@ class Separator(QMainWindow):
         self.undo_stack.append(batch)
         self.journal(batch, 'mutare')
         self.undo_btn.setEnabled(True)
-        self.statusBar().showMessage(f'{len(clips)} clipuri ({human_size(size)}) > {cat["nume"]}'
+        self.statusBar().showMessage(f'{len(clips) - len(extra)} clipuri ({human_size(size)}) > {cat["nume"]}'
+                                     + (f'  ·  +{len(extra)} audio sincron' if extra else '')
                                      + ('  ·  copiere pe alt disc, poate dura' if cross else ''), 6000)
         self.grid.setFocus()
 
@@ -1140,8 +1353,9 @@ class Separator(QMainWindow):
 
     def drop_from_grid(self, clips):
         # scoate clipurile din grila si selecteaza clipul urmator
-        first_row = min(self.model.clips.index(c) for c in clips)
         paths = {c.path for c in clips}
+        rows = [i for i, c in enumerate(self.model.clips) if c.path in paths]
+        first_row = min(rows) if rows else max(0, self.grid.currentIndex().row())
         self.all_clips = [c for c in self.all_clips if c.path not in paths]
         self.model.remove_paths(paths)
         if self.model.rowCount():
@@ -1265,14 +1479,15 @@ class Separator(QMainWindow):
         self.undo_btn.setEnabled(bool(self.undo_stack))
 
     def finished_report(self):
-        lines = [f'{c["nume"]}: {count_videos(self.cat_dir(c))} clipuri' for c in self.cats if count_videos(self.cat_dir(c))]
+        lines = [f'{c["nume"]}: {count_media(self.cat_dir(c))} clipuri' for c in self.cats if count_media(self.cat_dir(c))]
         box = QMessageBox(self)
         box.setWindowTitle('Gata')
         box.setText(f'Toate clipurile din {self.source.name} sunt sortate.\n\n' + '\n'.join(lines))
-        box.addButton(ui('Deschide destinatia in Finder'), QMessageBox.ButtonRole.AcceptRole)
+        reveal = box.addButton(ui('Deschide destinatia in Finder'), QMessageBox.ButtonRole.AcceptRole)
         box.addButton('Inchide', QMessageBox.ButtonRole.RejectRole)
-        if box.exec() == 0:
-            self.open_in_finder(self.dest_root)
+        box.buttonClicked.connect(lambda button: self.open_in_finder(self.dest_root) if button is reveal else None)
+        self.report_box = box
+        box.open()  # fara bucla de evenimente separata: mutarile si miniaturile continua
 
     # ---------- miniaturi
 
@@ -1281,8 +1496,17 @@ class Separator(QMainWindow):
             self.statusBar().showMessage('ffmpeg nu este instalat: fara miniaturi', 8000)
             return
         # intai cadrul principal pentru toate clipurile, apoi cadrele pentru derulare
+        for clip in self.model.clips:
+            if clip.kind == 'audio' and not wave_file(clip.key).exists() and (clip.key, 'unda') not in self.pending:
+                self.pending.add((clip.key, 'unda'))
+                self.thumb_pool.start(WaveJob(clip.key, clip.path, self.signals), 10)
+            if clip.levels is None and clip.duration and (clip.key, 'nivel') not in self.pending:
+                self.pending.add((clip.key, 'nivel'))
+                self.thumb_pool.start(LevelJob(clip.key, clip.path, clip.duration, self.signals), 5)
         for priority, indexes in ((10, [POSTER]), (0, [i for i in range(FRAMES) if i != POSTER])):
             for clip in self.model.clips:
+                if clip.kind == 'audio':
+                    continue
                 for i in indexes:
                     if i in self.frames.get(clip.key, set()) or (clip.key, i) in self.pending or not clip.duration:
                         continue
@@ -1295,7 +1519,51 @@ class Separator(QMainWindow):
         self.frames.setdefault(key, set()).add(index)
         self.model.refresh_key(key)
 
+    def wave_ready(self, key):
+        self.pending.discard((key, 'unda'))
+        QPixmapCache.remove(f'{key}_unda')
+        self.model.refresh_key(key)
+        current = self.current_clip()
+        if current and current.key == key:
+            self.show_wave(current)
+
+    def levels_ready(self, key, levels):
+        self.pending.discard((key, 'nivel'))
+        self.meta.setdefault(key, {})['niveluri'] = levels
+        self.meta_dirty = True
+        for clip in self.all_clips:
+            if clip.key == key:
+                clip.levels = levels
+        self.model.refresh_key(key)
+
+    def save_meta(self):
+        if self.meta_dirty:
+            self.meta_dirty = False
+            save_json(META_FILE, self.meta)
+
+    def wave_pixmap(self, key):
+        pix = QPixmapCache.find(f'{key}_unda')
+        if pix is None or pix.isNull():
+            pix = QPixmap(str(wave_file(key)))
+            if pix.isNull():
+                return None
+            QPixmapCache.insert(f'{key}_unda', pix)
+        return pix
+
+    def show_wave(self, clip):
+        if clip.kind == 'video' and not clip.audio:
+            return self.wave.set_wave(None, 'clip fara sunet')
+        pix = self.wave_pixmap(clip.key)
+        if pix:
+            return self.wave.set_wave(pix)
+        self.wave.set_wave(None, 'se calculeaza forma de unda...')
+        if FFMPEG and (clip.key, 'unda') not in self.pending:
+            self.pending.add((clip.key, 'unda'))
+            self.thumb_pool.start(WaveJob(clip.key, clip.path, self.signals), 20)
+
     def frame_pixmap(self, clip, index):
+        if clip.kind == 'audio':
+            return self.wave_pixmap(clip.key)
         ready = self.frames.get(clip.key, set())
         if index not in ready:
             if POSTER in ready:
@@ -1323,12 +1591,32 @@ class Separator(QMainWindow):
 
     # ---------- selectie si previzualizare
 
+    def linked_audio(self, selected):
+        """Audio nesortat care se suprapune in timp cu clipurile video selectate.
+        Intoarce (urmeaza, partial): 'partial' se suprapune si cu alte clipuri video inca nesortate."""
+        videos = [c for c in selected if c.kind == 'video']
+        if not videos:
+            return [], []
+        chosen = {c.path for c in selected}
+        others = [c for c in self.all_clips if c.kind == 'video' and c.path not in chosen]
+        follow, partial = [], []
+        for sound in self.all_clips:
+            if sound.kind != 'audio' or sound.path in chosen or not any(overlap(sound, v) > 0 for v in videos):
+                continue
+            (partial if any(overlap(sound, o) > 0 for o in others) else follow).append(sound)
+        return follow, partial
+
     def selection_changed(self, *_):
         clips = self.selected_clips()
+        follow, partial = self.linked_audio(clips) if self.audio_follow.isChecked() else ([], [])
+        if {c.key for c in follow} != self.sync_follow or {c.key for c in partial} != self.sync_partial:
+            self.sync_follow, self.sync_partial = {c.key for c in follow}, {c.key for c in partial}
+            self.grid.viewport().update()
         if len(clips) > 1:
             groups = sorted({c.group for c in clips})
             self.statusBar().showMessage(f'Selectate {len(clips)} clipuri · {human_size(sum(c.size for c in clips))} · '
-                                         f'{human_dur(sum(c.duration for c in clips))} · grup {", ".join(map(str, groups))}')
+                                         f'{human_dur(sum(c.duration for c in clips))} · grup {", ".join(map(str, groups))}'
+                                         + (f' · +{len(follow)} audio sincron' if follow else ''))
 
     def current_changed(self, current, _previous):
         if not current.isValid():
@@ -1336,13 +1624,19 @@ class Separator(QMainWindow):
         clip = self.model.clips[current.row()]
         when = datetime.fromtimestamp(clip.created).strftime('%d.%m.%Y  %H:%M:%S') if clip.created else '?'
         same_group = sum(1 for c in self.all_clips if c.group == clip.group)
+        if clip.kind == 'audio':
+            tech = f'Audio {clip.audio} · {clip.sample_rate / 1000:g} kHz · {clip.channels} canale<br>Inregistrat: {when}<br>'
+        else:
+            tech = f'{clip.codec} {clip.width}x{clip.height} · {clip.fps:g} fps · audio {clip.audio or "-"}<br>Filmat: {when}<br>'
+        if clip.levels:
+            tech += f'Sunet: varf {max(clip.levels):.0f} dB, mediu {sum(clip.levels) / len(clip.levels):.0f} dB<br>'
         self.info.setText(f'<b style="font-size:15px">{clip.name}</b><br>'
                           f'Durata {human_dur(clip.duration)} · {human_size(clip.size)}<br>'
-                          f'{clip.codec} {clip.width}x{clip.height} · {clip.fps:g} fps · audio {clip.audio or "-"}<br>'
-                          f'Filmat: {when}<br>'
+                          + tech +
                           f'<span style="color:{group_color(clip.group).name()}">Grup {clip.group}: {same_group} clipuri</span> (G = selecteaza tot grupul)<br>'
                           f'<span style="color:#7d8a98">{clip.path.parent}</span>'
                           + (f'<br><span style="color:#ffb4b4">Previzualizare video indisponibila: {MEDIA_ERROR}</span>' if MEDIA_ERROR else ''))
+        self.show_wave(clip)
         if self.loaded_preview != clip.path:
             self.loaded_preview = clip.path
             self.player.setSource(QUrl.fromLocalFile(str(clip.path)))
@@ -1359,6 +1653,8 @@ class Separator(QMainWindow):
         if not self.slider.isSliderDown():
             self.slider.setValue(ms)
         self.time_label.setText(f'{human_dur(ms / 1000)} / {human_dur(self.player.duration() / 1000)}')
+        if self.player.duration():
+            self.wave.set_position(ms / self.player.duration())
 
     def toggle_play(self):
         if not QMediaPlayer:
@@ -1366,6 +1662,17 @@ class Separator(QMainWindow):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
+            self.player.play()
+
+    def play_loudest(self):
+        """Sare la cea mai puternica parte a sunetului, ca sa auzi repede despre ce e clipul."""
+        clip = self.current_clip()
+        if not clip:
+            return
+        if clip.levels:
+            i = max(range(len(clip.levels)), key=lambda n: clip.levels[n])
+            self.player.setPosition(int(max(0.0, clip.duration * (i + 0.5) / FRAMES - 1.5) * 1000))
+        if QMediaPlayer:
             self.player.play()
 
     def set_rate(self, rate):
@@ -1457,6 +1764,9 @@ class Separator(QMainWindow):
                 if key == Qt.Key.Key_R:
                     self.reveal()
                     return True
+                if key == Qt.Key.Key_Q:
+                    self.play_loudest()
+                    return True
                 if key == Qt.Key.Key_M:
                     self.mute.toggle()
                     return True
@@ -1491,7 +1801,8 @@ class Separator(QMainWindow):
 
     def save_settings(self):
         self.settings.update({'marime': self.thumb_w, 'sortare': self.sort_box.currentIndex(), 'pauza_grup': self.gap.value(),
-                              'fara_sunet': self.mute.isChecked(), 'limita_scurte': self.short_limit.value(), 'autoredare': self.autoplay.isChecked()})
+                              'fara_sunet': self.mute.isChecked(), 'limita_scurte': self.short_limit.value(),
+                              'tip': self.kind_box.currentIndex(), 'audio_urmeaza': self.audio_follow.isChecked(), 'autoredare': self.autoplay.isChecked()})
         save_json(SETTINGS_FILE, self.settings)
 
     def closeEvent(self, event):
@@ -1502,6 +1813,7 @@ class Separator(QMainWindow):
         self.settings['geometrie'] = bytes(self.saveGeometry().toHex()).decode()
         self.settings['impartire'] = bytes(self.split.saveState().toHex()).decode()
         self.save_settings()
+        self.save_meta()
         self.player.stop()
         self.thumb_pool.clear()
         self.thumb_pool.waitForDone(5000)

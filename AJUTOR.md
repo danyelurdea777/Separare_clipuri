@@ -29,7 +29,7 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 ## Previzualizare (dreapta)
 
 - **Spatiu** reda / pauza, click pe imagine la fel.
-- **J / L** inapoi / inainte 5 secunde, **M** sunet pornit / oprit, viteze 1x, 2x, 4x.
+- **J / L** inapoi / inainte 5 secunde, **Q** partea cu sunet, **M** sunet pornit / oprit, viteze 1x, 2x, 4x.
 - **Enter** sau dublu click deschide clipul in IINA; **R** il arata in Finder.
 - "Reda automat clipul selectat" porneste redarea la fiecare selectie (ProRes 4K poate fi greu pe Mac Intel; implicit e oprit).
 
@@ -43,6 +43,23 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - Click dreapta pe un folder: vezi continutul, deschide in Finder, redenumeste (si pe disc), culoare, ordine, scoate din lista (folderul ramane pe disc).
 - **Vezi**: arata ce ai mutat deja acolo. De acolo poti muta mai departe in alt folder sau "Inapoi in nesortate". **Inapoi la nesortate** revine la sursa.
 - Numarul dintre paranteze = cate clipuri sunt deja in folder; "(nou)" = folderul nu exista inca pe disc.
+
+## Audio (recordere, lavaliere)
+
+- Fisierele audio (WAV, BWF, MP3, M4A, FLAC, AIFF) apar in grila langa clipuri, pe carduri mov, cu forma de unda in loc de imagine. Plimbi mouse-ul peste ele si vezi pozitia.
+- Ora inregistrarii se citeste din WAV-urile de la Zoom, Tascam, Sound Devices (BWF). La alte fisiere se deduce din ora la care s-a terminat inregistrarea.
+- Audio-ul intra in grupul clipurilor filmate in acelasi timp, deci **G** il selecteaza impreuna cu ele.
+- **Audio sincron merge cu clipurile** (bifa din stanga, pornita implicit): cand selectezi clipuri, inregistrarile audio facute in acelasi timp primesc marcajul portocaliu **SYNC** si se muta automat cu ele, in acelasi folder.
+- **SYNC partial** (chenar punctat): inregistrarea acopera si alte clipuri inca nesortate (de ex. recorderul a mers toata slujba). Ramane pe loc si pleaca odata cu ultimul clip cu care se suprapune. Daca vrei altfel, o selectezi si o muti manual.
+- Ceasurile camerei si recorderului trebuie sa fie sincronizate (toleranta: 5 secunde).
+- Lista de sus **Video si audio / Doar video / Doar audio** arata doar ce te intereseaza; audio-ul sincron se muta oricum cu clipurile.
+
+## Sunet
+
+- Pe fiecare miniatura, **barele din dreapta jos** arata nivelul sunetului in 8 puncte din clip: gri = liniste, verde = normal, galben = tare, rosu = foarte tare. Vezi dintr-o privire unde sunt discursurile si muzica.
+- **FARA SUNET** = clipul nu are pista audio; **LINISTE** = are, dar e aproape mut.
+- Sub previzualizare e **forma de unda** a clipului curent, cu pozitia redarii; click sau tragi pe ea ca sa sari in clip.
+- **Q** sau **Sunet (Q)** reda clipul de la partea cea mai puternica a sunetului: auzi repede daca e discurs, interviu sau muzica.
 
 ## Teste de expunere si clipuri pornite din greseala
 
@@ -63,7 +80,7 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - Mutarea pe acelasi disc este o simpla redenumire: instantanee, fara copiere.
 - Pe alt disc: copiere, verificare marime, apoi stergerea originalului, in fundal.
 - Nimic nu se sterge si nimic nu se suprascrie: la nume identic se adauga " (2)".
-- Fisierele insotitoare cu acelasi nume (.XML Sony, .LRF/.SRT DJI, .THM) se muta impreuna cu clipul.
+- Fisierele insotitoare cu acelasi nume (.XML Sony, .LRF/.SRT DJI, .THM) se muta impreuna cu clipul, la fel si audio-ul marcat SYNC.
 - **Cmd+Z** / "Anuleaza ultima mutare" muta inapoi ultimul lot. Merge de mai multe ori si chiar dupa redeschiderea aplicatiei (jurnalul e in `data/jurnal.jsonl`).
 - Cand sursa se goleste, aplicatia arata un rezumat pe foldere.
 
