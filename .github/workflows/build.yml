@@ -1,0 +1,155 @@
+# La fiecare push pe main: teste si pachete pentru Windows si Mac (Intel + Apple Silicon).
+# Release nou doar cand se schimba numarul din VERSIUNE (ex: 1.0 -> 1.1).
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ffmpeg (build LGPL)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip -OutFile ff.zip
+          Expand-Archive ff.zip -DestinationPath ff
+          New-Item -ItemType Directory -Force ffmpeg | Out-Null
+          Copy-Item ff/*/bin/ffmpeg.exe, ff/*/bin/ffprobe.exe ffmpeg/
+          Copy-Item ff/*/LICENSE.txt ffmpeg/LICENSE-ffmpeg.txt
+
+      - name: Dependinte
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Teste
+        run: python teste/test_aplicatie.py
+
+      - name: Build
+        shell: pwsh
+        run: |
+          python main.py --icon icon.png
+          pyinstaller --noconfirm --windowed --name SeparareClipuri --icon icon.png `
+            --add-data "AJUTOR.md:." --add-data "VERSIUNE:." `
+            --add-binary "ffmpeg/ffmpeg.exe:ffmpeg" --add-binary "ffmpeg/ffprobe.exe:ffmpeg" `
+            --add-data "ffmpeg/LICENSE-ffmpeg.txt:ffmpeg" main.py
+
+      - name: Verificare .exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/SeparareClipuri/SeparareClipuri.exe -ArgumentList '--verificare' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "verificarea a esuat: $($p.ExitCode)" }
+
+      - name: Arhiva
+        shell: pwsh
+        run: Compress-Archive dist/SeparareClipuri SeparareClipuri-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeparareClipuri-Windows
+          path: SeparareClipuri-Windows.zip
+
+  mac:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+            name: Intel
+          - runner: macos-15
+            arch: arm64
+            name: AppleSilicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ffmpeg (build static martin-riedl.de)
+        run: |
+          mkdir -p ffmpeg
+          for t in ffmpeg ffprobe; do
+            curl -sSL -o "$t.zip" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/${{ matrix.arch }}/release/$t.zip"
+            unzip -o -q "$t.zip" -d ffmpeg
+          done
+          chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
+          ffmpeg/ffmpeg -version | head -1
+
+      - name: Dependinte
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Teste
+        run: python teste/test_aplicatie.py
+
+      - name: Build
+        run: |
+          python main.py --icon icon.png
+          pyinstaller --noconfirm --windowed --name "Separare Clipuri" --icon icon.png \
+            --osx-bundle-identifier ro.urdea.separareclipuri \
+            --add-data "AJUTOR.md:." --add-data "VERSIUNE:." \
+            --add-binary "ffmpeg/ffmpeg:ffmpeg" --add-binary "ffmpeg/ffprobe:ffmpeg" main.py
+          app="dist/Separare Clipuri.app"
+          plutil -replace CFBundleShortVersionString -string "$(cat VERSIUNE)" "$app/Contents/Info.plist"
+          plutil -replace CFBundleVersion -string "$(cat VERSIUNE)" "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+
+      - name: Verificare .app
+        run: '"dist/Separare Clipuri.app/Contents/MacOS/Separare Clipuri" --verificare'
+
+      - name: DMG
+        run: |
+          mkdir dmg
+          cp -R "dist/Separare Clipuri.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Separare Clipuri" -srcfolder dmg -ov -format UDZO "SeparareClipuri-Mac-${{ matrix.name }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeparareClipuri-Mac-${{ matrix.name }}
+          path: SeparareClipuri-Mac-${{ matrix.name }}.dmg
+
+  release:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versiune
+        id: v
+        run: |
+          v=$(tr -d '[:space:]' < VERSIUNE)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v$v exista deja: pachetele raman doar ca artefacte; mareste VERSIUNE pentru un release nou"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: pachete
+          merge-multiple: true
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Separare Clipuri ${{ steps.v.outputs.version }}
+          make_latest: true
+          files: pachete/*
+          body_path: INSTALARE.md

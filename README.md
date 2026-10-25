@@ -9,13 +9,15 @@ Aplicatie Mac (Python + Qt) cu care muti clipurile transcodate in foldere pe cat
 
 Daca muti folderul aplicatiei in alt loc, ruleaza din nou `Creeaza_app.command`.
 
-## Windows
+## Descarcare (Windows si Mac)
 
-La fiecare push pe `main`, GitHub Actions ruleaza testele pe Windows, construieste `SeparareClipuri.exe` (cu ffmpeg inclus) si il publica la **Releases**. Link de dat mai departe, mereu ultima versiune:
+Link de dat mai departe, mereu ultima versiune:
 
 https://github.com/danyelurdea777/separare-clipuri/releases/latest
 
-Instructiunile de instalare pentru Windows sunt in `INSTALARE-WINDOWS.md` (apar si pe pagina release-ului).
+Acolo sunt `SeparareClipuri-Windows.zip`, `SeparareClipuri-Mac-Intel.dmg` si `SeparareClipuri-Mac-AppleSilicon.dmg`, toate cu ffmpeg inclus. Instructiunile de instalare sunt in `INSTALARE.md` (apar si pe pagina release-ului).
+
+La fiecare push pe `main`, GitHub Actions ruleaza testele pe Windows si pe ambele tipuri de Mac si construieste pachetele (`.github/workflows/build.yml`). Un release nou apare doar cand schimbi numarul din `VERSIUNE` (1.0, 1.1, 2.0...); altfel pachetele raman ca artefacte in pagina Actions.
 
 ## Instalare pe alt Mac
 
@@ -31,7 +33,7 @@ Miniaturile si metadatele cer `ffmpeg` si `ffprobe` (aici sunt in `/opt/local/bi
 - `AJUTOR.md`: ghidul afisat cu F1
 - `data/`: setari, proiecte, sabloane, jurnalul mutarilor (`jurnal.jsonl`), miniaturi si `pornire.log` (erori)
 - `teste/test_aplicatie.py`: test automat pe clipuri generate (muta, anuleaza, coliziuni, fisiere insotitoare, Cos); ruleaza pe Mac si Windows
-- `.github/workflows/windows.yml`: build-ul Windows
+- `.github/workflows/build.yml`: teste si pachete Windows + Mac, release la schimbarea `VERSIUNE`
 - `teste/pregateste_miniaturi.py`: genereaza dinainte miniaturile unui folder, fara sa mute nimic
 
 ## Idei preluate din Culling Studio
@@ -40,6 +42,5 @@ Pornirea prin `.command` cu jurnal de erori, tema intunecata si culorile, miniat
 
 ## Mai departe
 
-- `.dmg` complet independent (cu Python inclus): PyInstaller sau py2app, cand aplicatia e matura
 - Reguli automate (ex: clipurile DJI direct in folderul dronei)
 - Stele / marcaj "rebut" inainte de mutare

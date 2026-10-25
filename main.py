@@ -29,6 +29,7 @@ else:
     _default_data = APP_DIR / 'data'
 DATA = Path(os.environ.get('SEPARARE_DATA', _default_data))  # alt folder doar pentru teste
 THUMBS = DATA / 'thumbs'
+VERSION = (APP_DIR / 'VERSIUNE').read_text().strip() if (APP_DIR / 'VERSIUNE').exists() else ''
 SETTINGS_FILE = DATA / 'setari.json'
 META_FILE = DATA / 'metadate.json'
 JOURNAL_FILE = DATA / 'jurnal.jsonl'
@@ -526,7 +527,7 @@ class PreviewVideo(QVideoWidget):
 class Separator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Separare Clipuri')
+        self.setWindowTitle(f'Separare Clipuri {VERSION}'.strip())
         for folder in (DATA, THUMBS):
             folder.mkdir(parents=True, exist_ok=True)
         self.settings = load_json(SETTINGS_FILE, {})
