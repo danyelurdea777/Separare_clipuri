@@ -188,6 +188,47 @@ try:
     w.restore_selection({src2 / 'V3.MP4'})
     check(not w.sync_follow, 'fara bifa, audio-ul nu mai urmeaza clipurile')
     w.audio_follow.setChecked(True)
+
+    # ---------- LUT: un cub care inverseaza culorile, usor de verificat pe pixeli
+    from PySide6.QtGui import QImage, QColor
+    inv = TMP / 'inversare.cube'
+    inv.write_text('LUT_3D_SIZE 2\n' + ''.join(f'{1 - r} {1 - g} {1 - b}\n' for b in (0, 1) for g in (0, 1) for r in (0, 1)))
+    bad = TMP / 'unu_d.cube'
+    bad.write_text('LUT_1D_SIZE 2\n0 0 0\n1 1 1\n')
+    check(w.load_lut(str(bad)) is None, 'LUT 1D refuzat')
+    v3 = next(c for c in w.all_clips if c.name == 'V3.MP4')
+    w.set_project_lut(str(inv))
+    tag = w.load_lut(str(inv)).tag
+    check(w.fkey(v3) == f'{v3.key}_{tag}', 'miniaturile cu LUT au cheie separata')
+    check(wait(lambda: not w.pending, 60) and main.frame_file(w.fkey(v3), main.POSTER).exists(), 'miniatura cu LUT generata')
+    plain, graded = QImage(str(main.frame_file(v3.key, main.POSTER))), QImage(str(main.frame_file(w.fkey(v3), main.POSTER)))
+    spots = [(plain.width() * x // 8, plain.height() // 3) for x in (1, 3, 5, 7)]
+    inverted = all(abs(QColor(plain.pixel(*s)).red() + QColor(graded.pixel(*s)).red() - 255) < 50 and
+                   abs(QColor(plain.pixel(*s)).green() + QColor(graded.pixel(*s)).green() - 255) < 50 for s in spots)
+    check(inverted, 'LUT aplicat pe miniatura (culori inversate)')
+    sample = QImage(4, 4, QImage.Format.Format_RGB888); sample.fill(QColor(200, 50, 10))
+    out = QColor(w.load_lut(str(inv)).apply(sample).pixel(1, 1))
+    check(abs(out.red() - 55) <= 3 and abs(out.green() - 205) <= 3 and abs(out.blue() - 245) <= 3,
+          f'LUT pe previzualizare ({out.red()}, {out.green()}, {out.blue()})')
+    w.restore_selection({src2 / 'V3.MP4'})
+    if not main.MEDIA_ERROR:  # fara QtMultimedia nu exista previzualizare video deloc
+        check(w.preview_stack.currentIndex() == 1 and w.preview_lut is not None, 'previzualizarea trece prin LUT')
+    shown = main.MEDIA_ERROR or wait(lambda: w.lut_view.pixmap() is not None and not w.lut_view.pixmap().isNull(), 15)
+    if not shown:  # depinde de redarea video a sistemului; pe serverele de build poate lipsi
+        print('INFO previzualizarea cu LUT nu a primit cadre in 15 s', flush=True)
+        report(f'{sys.platform}: previzualizarea cu LUT nu a primit cadre', 'warning')
+    w.project()['reguli_lut'] = [{'prefix': 'v3', 'lut': ''}]
+    w.apply_lut_change()
+    check(w.fkey(v3) == v3.key and w.preview_stack.currentIndex() == 0, 'regula pe camera: fara LUT pentru V3')
+    w.project()['reguli_lut'] = []
+    w.set_project_lut('')
+    check(w.fkey(v3) == v3.key and w.project()['lut'] == '', 'LUT scos')
+    sony = Path('/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app/Contents/Lumetri/LUTs/1_SGamut3CineSLog3_To_LC-709.cube')
+    if sony.exists():
+        lut = main.CubeLut(sony)
+        grey = QImage(2, 2, QImage.Format.Format_RGB888); grey.fill(QColor(105, 105, 105))  # gri 18% in S-Log3
+        out = QColor(lut.apply(grey).pixel(0, 0))
+        check(lut.size == 33 and 90 < out.red() < 140 and abs(out.red() - out.green()) < 12, f'LUT Sony S-Log3: gri 105 > {out.red()}')
     w.grab().save(str(TMP / 'captura.png'))
     w.close()
 except Exception:

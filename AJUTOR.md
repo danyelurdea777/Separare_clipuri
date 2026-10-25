@@ -61,6 +61,14 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - Sub previzualizare e **forma de unda** a clipului curent, cu pozitia redarii; click sau tragi pe ea ca sa sari in clip.
 - **Q** sau **Sunet (Q)** reda clipul de la partea cea mai puternica a sunetului: auzi repede daca e discurs, interviu sau muzica.
 
+## LUT (S-Log3, C-Log, V-Log, D-Log)
+
+- Din lista **LUT** (dreapta, sub previzualizare) alegi un fisier `.cube`, de exemplu `1_SGamut3CineSLog3_To_LC-709` din Premiere. Miniaturile, derularea din miniatura si previzualizarea video se vad corectate; fisierele raman neatinse.
+- LUT-ul se tine minte pe proiect (folderul de clipuri), iar ultimele LUT-uri folosite raman in lista.
+- **Pe camera**: un LUT diferit dupa inceputul numelui fisierului. Ex: `DJI` > `DJI Mini 4 Pro D-Log M to Rec.709`, iar camerele filmate fara log > `Fara LUT`.
+- Miniaturile cu LUT se pastreaza separat: cand schimbi LUT-ul, cele vechi raman si revii instant la ele.
+- Previzualizarea cu LUT trece prin procesor (~30 de cadre pe secunda la 4K pe Mac Intel); fara LUT ramane pe placa video.
+
 ## Teste de expunere si clipuri pornite din greseala
 
 - **Selecteaza scurte** (langa cautare) selecteaza toate clipurile mai scurte decat limita aleasa (implicit sub 2 s).

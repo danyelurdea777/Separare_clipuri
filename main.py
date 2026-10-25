@@ -7,20 +7,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PySide6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect, QTimer, QUrl, QMimeData,
                             QRunnable, QThreadPool, QObject, Signal, QEvent, QItemSelectionModel, QItemSelection, QByteArray, QFile)
-from PySide6.QtGui import (QPainter, QColor, QPen, QPixmap, QPixmapCache, QFont, QKeySequence, QShortcut,
+from PySide6.QtGui import (QImage, QPainter, QColor, QPen, QPixmap, QPixmapCache, QFont, QKeySequence, QShortcut,
                            QIcon, QDesktopServices, QFontMetrics, QPainterPath)
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QListView,
+try:
+    import numpy as np  # doar pentru LUT pe previzualizarea video
+except ImportError:
+    np = None
+from PySide6.QtWidgets import (QStackedWidget, QGridLayout, QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QListView,
                                QLabel, QFileDialog, QInputDialog, QSlider, QCheckBox, QComboBox, QMessageBox,
                                QAbstractItemView, QSplitter, QLineEdit, QStyledItemDelegate, QStyle, QMenu, QToolButton,
                                QProgressBar, QSpinBox, QScrollArea, QColorDialog, QProgressDialog, QDialog, QTextBrowser,
                                QSizePolicy, QFrame)
 try:
-    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
     from PySide6.QtMultimediaWidgets import QVideoWidget
     MEDIA_ERROR = ''
 except ImportError as exc:
     # ex: Windows fara Media Foundation; sortarea merge, doar previzualizarea video lipseste
-    QMediaPlayer = QAudioOutput = None
+    QMediaPlayer = QAudioOutput = QVideoSink = None
     QVideoWidget = QWidget
     MEDIA_ERROR = str(exc)
 
@@ -36,6 +40,7 @@ else:
     _default_data = APP_DIR / 'data'
 DATA = Path(os.environ.get('SEPARARE_DATA', _default_data))  # alt folder doar pentru teste
 THUMBS = DATA / 'thumbs'
+LUT_DIR = DATA / 'luts'
 VERSION = (APP_DIR / 'VERSIUNE').read_text().strip() if (APP_DIR / 'VERSIUNE').exists() else ''
 SETTINGS_FILE = DATA / 'setari.json'
 META_FILE = DATA / 'metadate.json'
@@ -251,12 +256,85 @@ def sidecars(path):
         return []
 
 
+class CubeLut:
+    """LUT 3D (.cube): copiat in data/luts pentru ffmpeg si tabel numpy pentru previzualizarea video."""
+    GRID = 65  # tabelul de previzualizare: 65 de trepte pe canal, interpolat din cubul original
+
+    def __init__(self, path):
+        self.path = Path(path)
+        raw = self.path.read_bytes()
+        self.tag = hashlib.md5(raw).hexdigest()[:8]
+        self.name = self.path.stem
+        size, lo, hi, rows = 0, [0.0] * 3, [1.0] * 3, []
+        for line in raw.decode('utf-8', 'replace').splitlines():
+            parts = line.split()
+            if not parts or parts[0].startswith('#'):
+                continue
+            head = parts[0].upper()
+            if head == 'LUT_3D_SIZE':
+                size = int(parts[1])
+            elif head == 'LUT_1D_SIZE':
+                raise ValueError('LUT-urile 1D nu sunt suportate, doar cele 3D')
+            elif head == 'DOMAIN_MIN':
+                lo = [float(x) for x in parts[1:4]]
+            elif head == 'DOMAIN_MAX':
+                hi = [float(x) for x in parts[1:4]]
+            elif head[0].isdigit() or head[0] in '-.':
+                rows.append(parts[:3])
+        if size < 2 or len(rows) != size ** 3:
+            raise ValueError(f'fisier .cube invalid: {self.path.name}')
+        self.size, self.rows, self.lo, self.hi = size, rows, lo, hi
+        self._table = None
+
+    def ffmpeg_file(self):
+        # copie cu nume simplu: calea Premiere are spatii, iar filtrele ffmpeg nu le suporta usor
+        LUT_DIR.mkdir(parents=True, exist_ok=True)
+        target = LUT_DIR / f'{self.tag}.cube'
+        if not target.exists():
+            shutil.copyfile(self.path, target)
+        return target.name
+
+    def table(self):
+        if self._table is None:
+            n, g = self.size, self.GRID
+            data = np.array(self.rows, dtype=np.float32).reshape(n, n, n, 3)  # in .cube rosul variaza cel mai repede
+            axis = np.linspace(0.0, 1.0, g)
+            pos = [np.clip((axis - self.lo[c]) / (self.hi[c] - self.lo[c]), 0, 1) * (n - 1) for c in range(3)]
+            r, gr, b = np.meshgrid(pos[0], pos[1], pos[2], indexing='ij')
+            r0, g0, b0 = (np.minimum(np.floor(x).astype(np.int32), n - 2) for x in (r, gr, b))
+            fr, fg, fb = r - r0, gr - g0, b - b0
+            out = np.zeros(r.shape + (3,), np.float32)
+            for dr in (0, 1):
+                for dg in (0, 1):
+                    for db in (0, 1):
+                        weight = (fr if dr else 1 - fr) * (fg if dg else 1 - fg) * (fb if db else 1 - fb)
+                        out += weight[..., None] * data[b0 + db, g0 + dg, r0 + dr]
+            self._table = np.clip(out * 255 + 0.5, 0, 255).astype(np.uint8).reshape(-1, 3)
+        return self._table
+
+    def apply(self, image):
+        """Aplica LUT-ul pe o imagine RGB888 (previzualizare)."""
+        g = self.GRID
+        w, h, bpl = image.width(), image.height(), image.bytesPerLine()
+        pixels = np.frombuffer(image.constBits(), np.uint8, count=bpl * h).reshape(h, bpl)[:, :w * 3].reshape(h, w, 3)
+        idx = (pixels.astype(np.uint32) * (g - 1) + 127) // 255
+        out = np.ascontiguousarray(self.table()[(idx[..., 0] * g + idx[..., 1]) * g + idx[..., 2]])
+        return QImage(out.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+def premiere_luts():
+    """Folderul cu LUT-uri din Premiere Pro, daca exista (punct de pornire la alegerea LUT-ului)."""
+    import glob
+    found = sorted(glob.glob('/Applications/Adobe Premiere Pro*/Adobe Premiere Pro*.app/Contents/Lumetri/LUTs'))
+    return found[-1] if found else str(Path.home())
+
+
 def frame_file(key, index):
     return THUMBS / f'{key}_{index}.jpg'
 
 
 def wave_file(key):
-    return THUMBS / f'{key}_unda.png'
+    return THUMBS / f'{key}_unda2.png'  # 2 = scara sqrt, se vad si sunetele slabe
 
 
 def overlap(a, b):
@@ -299,18 +377,22 @@ class Signals(QObject):
 
 
 class FrameJob(QRunnable):
-    def __init__(self, key, index, path, seconds, signals):
+    def __init__(self, key, index, path, seconds, signals, lut_file=None):
         super().__init__()
         self.key, self.index, self.path, self.seconds, self.signals = key, index, path, seconds, signals
+        self.lut_file = lut_file
 
     def run(self):
         target = frame_file(self.key, self.index)
         try:
             if not target.exists():
                 tmp = target.with_name(target.stem + '.part.jpg')
+                # LUT-ul dupa micsorare: mult mai rapid pe 4K, diferenta de culoare e neglijabila
+                vf = f'scale={THUMB_W}:-2' + (f',lut3d=file={self.lut_file}' if self.lut_file else '')
                 subprocess.run([FFMPEG, '-v', 'error', '-nostdin', '-ss', f'{self.seconds:.2f}', '-i', str(self.path),
-                                '-frames:v', '1', '-vf', f'scale={THUMB_W}:-2', '-q:v', '5', '-y', str(tmp)],
-                               capture_output=True, timeout=90, creationflags=NO_WINDOW)
+                                '-frames:v', '1', '-vf', vf, '-q:v', '5', '-y', str(tmp)],
+                               capture_output=True, timeout=90, creationflags=NO_WINDOW,
+                               cwd=str(LUT_DIR) if self.lut_file else None)
                 if tmp.exists() and tmp.stat().st_size:
                     tmp.replace(target)
         except (OSError, subprocess.SubprocessError):
@@ -333,7 +415,7 @@ class WaveJob(QRunnable):
             if not target.exists():
                 tmp = target.with_name(target.stem + '.part.png')
                 subprocess.run([FFMPEG, '-v', 'error', '-nostdin', '-i', str(self.path), '-vn', '-filter_complex',
-                                '[0:a]aformat=channel_layouts=mono,showwavespic=s=1200x160:colors=0x74e1ff',
+                                '[0:a]aformat=channel_layouts=mono,showwavespic=s=1200x160:colors=0x74e1ff:scale=sqrt',
                                 '-frames:v', '1', '-y', str(tmp)], capture_output=True, timeout=300, creationflags=NO_WINDOW)
                 if tmp.exists() and tmp.stat().st_size:
                     tmp.replace(target)
@@ -700,6 +782,22 @@ class WaveStrip(QWidget):
             self.mousePressEvent(event)
 
 
+class LutView(QLabel):
+    """Previzualizarea video cu LUT: cadrele vin printr-un QVideoSink si sunt corectate cu numpy."""
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet('background:#000000;')
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+
 class NullPlayer(QObject):
     """Inlocuieste playerul si iesirea audio cand QtMultimedia lipseste: orice apel nu face nimic."""
     mediaStatusChanged = Signal(object)
@@ -745,6 +843,7 @@ class Separator(QMainWindow):
         self.next_batch = 1
         self.moving = 0
         self.loaded_preview = None
+        self.luts = {}
 
         self.signals = Signals()
         self.signals.frame_done.connect(self.frame_ready)
@@ -926,7 +1025,19 @@ class Separator(QMainWindow):
         self.video = PreviewVideo()
         self.video.setMinimumHeight(200)
         self.video.clicked.connect(self.toggle_play)
-        rl.addWidget(self.video, 3)
+        self.lut_view = LutView()
+        self.lut_view.clicked.connect(self.toggle_play)
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.addWidget(self.video)
+        self.preview_stack.addWidget(self.lut_view)
+        rl.addWidget(self.preview_stack, 3)
+        self.sink = QVideoSink(self) if QVideoSink else None
+        self.preview_lut, self.lut_frame = None, None
+        if self.sink:
+            self.sink.videoFrameChanged.connect(self.on_sink_frame)
+        self.lut_timer = QTimer(self)
+        self.lut_timer.setInterval(30)
+        self.lut_timer.timeout.connect(self.render_lut_frame)
         self.player = QMediaPlayer(self) if QMediaPlayer else NullPlayer(self)
         self.audio = QAudioOutput(self) if QAudioOutput else NullPlayer(self)
         self.audio.setVolume(0.6)
@@ -970,6 +1081,17 @@ class Separator(QMainWindow):
         self.autoplay = QCheckBox('Reda automat clipul selectat')
         self.autoplay.setChecked(bool(self.settings.get('autoredare', False)))
         rl.addWidget(self.autoplay)
+        lut_row = QHBoxLayout()
+        rl.addLayout(lut_row)
+        lut_row.addWidget(QLabel('LUT'))
+        self.lut_box = QComboBox()
+        self.lut_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lut_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.lut_box.setMinimumContentsLength(14)
+        self.lut_box.setToolTip('LUT pentru miniaturi si previzualizare (ex: S-Log3 > Rec709). Fisierele nu se modifica.')
+        self.lut_box.activated.connect(self.lut_chosen)
+        lut_row.addWidget(self.lut_box, 1)
+        self.btn(lut_row, 'Pe camera', self.edit_lut_rules).setToolTip('LUT diferit dupa numele fisierului, ex: DJI > LUT-ul dronei')
         self.info = QLabel('')
         self.info.setWordWrap(True)
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1035,6 +1157,7 @@ class Separator(QMainWindow):
         self.recent.blockSignals(False)
         self.load_undo_stack()
         self.save_settings()
+        self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
         self.show_folder(self.source)
 
     def project(self):
@@ -1080,7 +1203,7 @@ class Separator(QMainWindow):
             clip.levels = m.get('niveluri')
             if clip.levels is None and clip.kind == 'video' and 'audio' in m and not m['audio']:
                 clip.levels = []
-            self.frames.setdefault(clip.key, {i for i in range(FRAMES) if frame_file(clip.key, i).exists()})
+            self.scan_frames(clip)
         self.all_clips = clips
         assign_groups(self.all_clips, self.gap.value())
         in_source = self.view_dir == self.source
@@ -1507,17 +1630,183 @@ class Separator(QMainWindow):
             for clip in self.model.clips:
                 if clip.kind == 'audio':
                     continue
+                fk = self.fkey(clip)
+                lut = self.lut_for(clip)
                 for i in indexes:
-                    if i in self.frames.get(clip.key, set()) or (clip.key, i) in self.pending or not clip.duration:
+                    if i in self.frames.get(fk, set()) or (fk, i) in self.pending or not clip.duration:
                         continue
-                    self.pending.add((clip.key, i))
+                    self.pending.add((fk, i))
                     seconds = clip.duration * (i + 0.5) / FRAMES
-                    self.thumb_pool.start(FrameJob(clip.key, i, clip.path, seconds, self.signals), priority)
+                    self.thumb_pool.start(FrameJob(fk, i, clip.path, seconds, self.signals, lut.ffmpeg_file() if lut else None), priority)
 
     def frame_ready(self, key, index):
         self.pending.discard((key, index))
         self.frames.setdefault(key, set()).add(index)
-        self.model.refresh_key(key)
+        self.model.refresh_key(key[:16])  # cheia cadrului = cheia clipului + eticheta LUT-ului
+
+    def scan_frames(self, clip):
+        fk = self.fkey(clip)
+        if fk not in self.frames:
+            self.frames[fk] = {i for i in range(FRAMES) if frame_file(fk, i).exists()}
+
+    # ---------- LUT
+
+    def load_lut(self, path):
+        if not path:
+            return None
+        if path not in self.luts:
+            try:
+                self.luts[path] = CubeLut(path)
+            except (OSError, ValueError) as exc:
+                self.luts[path] = None
+                self.statusBar().showMessage(f'LUT indisponibil: {exc}', 8000)
+        return self.luts[path]
+
+    def lut_for(self, clip):
+        """LUT-ul clipului: regula de camera dupa prefixul numelui, altfel LUT-ul proiectului."""
+        if clip.kind == 'audio' or not self.source:
+            return None
+        project = self.project()
+        name = clip.name.lower()
+        for rule in project.get('reguli_lut', []):
+            if rule['prefix'] and name.startswith(rule['prefix'].lower()):
+                return self.load_lut(rule['lut'])
+        return self.load_lut(project.get('lut', ''))
+
+    def fkey(self, clip):
+        lut = self.lut_for(clip)
+        return clip.key + (f'_{lut.tag}' if lut else '')
+
+    def fill_lut_box(self, box, selected):
+        box.blockSignals(True)
+        box.clear()
+        box.addItem('Fara LUT', '')
+        paths = [p for p in self.settings.get('luturi', []) if Path(p).exists()]
+        if selected and selected not in paths:
+            paths.insert(0, selected)
+        for path in paths:
+            box.addItem(Path(path).stem, path)
+        box.addItem('Alege fisier .cube...', '__alege__')
+        box.setCurrentIndex(max(0, box.findData(selected)))
+        box.blockSignals(False)
+
+    def choose_lut_file(self):
+        start = self.settings.get('dir_lut') or premiere_luts()
+        path, _ = QFileDialog.getOpenFileName(self, 'Alege LUT-ul (.cube)', start, 'LUT 3D (*.cube *.CUBE)')
+        if not path or not self.load_lut(path):
+            return None
+        self.settings['dir_lut'] = str(Path(path).parent)
+        self.settings['luturi'] = [path] + [p for p in self.settings.get('luturi', []) if p != path][:7]
+        return path
+
+    def lut_chosen(self, index):
+        if not self.source:
+            return self.fill_lut_box(self.lut_box, '')
+        path = self.lut_box.itemData(index)
+        if path == '__alege__':
+            path = self.choose_lut_file()
+            if path is None:
+                return self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
+        self.set_project_lut(path)
+
+    def set_project_lut(self, path):
+        if path and not self.load_lut(path):
+            return self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
+        self.project()['lut'] = path
+        if path:
+            self.settings['luturi'] = [path] + [p for p in self.settings.get('luturi', []) if p != path][:7]
+        self.save_settings()
+        self.fill_lut_box(self.lut_box, path)
+        self.apply_lut_change()
+
+    def apply_lut_change(self):
+        for clip in self.all_clips:
+            self.scan_frames(clip)
+        self.queue_frames()
+        self.grid.viewport().update()
+        clip = self.current_clip()
+        if clip:
+            self.update_preview_lut(clip)
+            self.player.setPosition(self.player.position())  # cere un cadru nou pentru previzualizare
+
+    def edit_lut_rules(self):
+        if not self.source:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('LUT pe camera')
+        dialog.resize(640, 300)
+        layout = QVBoxLayout(dialog)
+        info = QLabel('Clipurile al caror nume incepe cu prefixul primesc LUT-ul ales; restul primesc LUT-ul proiectului.\n'
+                      'Ex: DJI > DJI Mini 4 Pro D-Log M to Rec.709, sau C0 > Fara LUT pentru o camera filmata fara log.')
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        grid = QGridLayout()
+        layout.addLayout(grid)
+        rows = []
+
+        def add_row(prefix='', lut=''):
+            edit = QLineEdit(prefix)
+            edit.setPlaceholderText('prefix nume, ex: DJI')
+            box = QComboBox()
+            self.fill_lut_box(box, lut)
+            box.activated.connect(lambda i, b=box: self.fill_lut_box(b, self.choose_lut_file() or '')
+                                  if b.itemData(i) == '__alege__' else None)
+            remove = QToolButton()
+            remove.setText('Sterge')
+            entry = [edit, box, remove]
+            remove.clicked.connect(lambda: ([w.hide() for w in entry], rows.remove(entry)))
+            for col, widget in enumerate(entry):
+                grid.addWidget(widget, len(rows), col)
+            grid.setColumnStretch(1, 1)
+            rows.append(entry)
+
+        for rule in self.project().get('reguli_lut', []):
+            add_row(rule['prefix'], rule['lut'])
+        if not rows:
+            add_row()
+        buttons = QHBoxLayout()
+        layout.addStretch()
+        layout.addLayout(buttons)
+        add = QPushButton('+ Regula')
+        add.clicked.connect(lambda: add_row())
+        buttons.addWidget(add)
+        buttons.addStretch()
+        cancel = QPushButton('Renunta')
+        cancel.clicked.connect(dialog.reject)
+        save = QPushButton('Salveaza')
+        save.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        if dialog.exec():
+            self.project()['reguli_lut'] = [{'prefix': e.text().strip(), 'lut': b.currentData() if b.currentData() != '__alege__' else ''}
+                                            for e, b, _ in rows if e.text().strip()]
+            self.save_settings()
+            self.apply_lut_change()
+
+    def update_preview_lut(self, clip):
+        """Previzualizarea trece prin LUT (sink + numpy) doar cand clipul are LUT; altfel ramane pe placa video."""
+        lut = self.lut_for(clip) if (clip and self.sink and np is not None) else None
+        if (lut is None) != (self.preview_lut is None):
+            self.player.setVideoOutput(self.sink if lut else self.video)
+            self.preview_stack.setCurrentIndex(1 if lut else 0)
+            (self.lut_timer.start if lut else self.lut_timer.stop)()
+        self.preview_lut = lut
+        if lut is None and clip and np is None and self.lut_for(clip):
+            self.statusBar().showMessage('LUT aplicat doar pe miniaturi: pentru previzualizare lipseste numpy', 6000)
+
+    def on_sink_frame(self, frame):
+        self.lut_frame = frame
+
+    def render_lut_frame(self):
+        frame, self.lut_frame = self.lut_frame, None
+        if frame is None or self.preview_lut is None or not frame.isValid():
+            return
+        image = frame.toImage()
+        if image.isNull():
+            return
+        image = image.scaled(self.lut_view.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation).convertToFormat(QImage.Format.Format_RGB888)
+        self.lut_view.setPixmap(QPixmap.fromImage(self.preview_lut.apply(image)))
 
     def wave_ready(self, key):
         self.pending.discard((key, 'unda'))
@@ -1564,7 +1853,8 @@ class Separator(QMainWindow):
     def frame_pixmap(self, clip, index):
         if clip.kind == 'audio':
             return self.wave_pixmap(clip.key)
-        ready = self.frames.get(clip.key, set())
+        fk = self.fkey(clip)
+        ready = self.frames.get(fk, set())
         if index not in ready:
             if POSTER in ready:
                 index = POSTER
@@ -1572,10 +1862,10 @@ class Separator(QMainWindow):
                 index = min(ready)
             else:
                 return None
-        cache_key = f'{clip.key}_{index}'
+        cache_key = f'{fk}_{index}'
         pix = QPixmapCache.find(cache_key)
         if pix is None or pix.isNull():
-            pix = QPixmap(str(frame_file(clip.key, index)))
+            pix = QPixmap(str(frame_file(fk, index)))
             if pix.isNull():
                 return None
             QPixmapCache.insert(cache_key, pix)
@@ -1637,6 +1927,7 @@ class Separator(QMainWindow):
                           f'<span style="color:#7d8a98">{clip.path.parent}</span>'
                           + (f'<br><span style="color:#ffb4b4">Previzualizare video indisponibila: {MEDIA_ERROR}</span>' if MEDIA_ERROR else ''))
         self.show_wave(clip)
+        self.update_preview_lut(clip)
         if self.loaded_preview != clip.path:
             self.loaded_preview = clip.path
             self.player.setSource(QUrl.fromLocalFile(str(clip.path)))
