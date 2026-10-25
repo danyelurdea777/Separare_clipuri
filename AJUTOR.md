@@ -64,8 +64,10 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 ## LUT (S-Log3, C-Log, V-Log, D-Log)
 
 - Din lista **LUT** (dreapta, sub previzualizare) alegi un fisier `.cube`, de exemplu `1_SGamut3CineSLog3_To_LC-709` din Premiere. Miniaturile, derularea din miniatura si previzualizarea video se vad corectate; fisierele raman neatinse.
-- LUT-ul se tine minte pe proiect (folderul de clipuri), iar ultimele LUT-uri folosite raman in lista.
-- **Pe camera**: un LUT diferit dupa inceputul numelui fisierului. Ex: `DJI` > `DJI Mini 4 Pro D-Log M to Rec.709`, iar camerele filmate fara log > `Fara LUT`.
+- **Automat dupa camera**: aplicatia citeste din fisierele Sony gamma inregistrata (ex: `s-log3-cine` sau `rec709`) si modelul camerei. Clipurile S-Log3 primesc singure LUT-ul Sony, iar cele rec709 raman fara LUT, chiar daca ai schimbat profilul in timpul filmarii. Miniatura arata eticheta **SLOG3**.
+- Dupa transcodare (ProRes) informatia se pierde, asa ca aplicatia o ia din originale: deschide o data folderul cu fisierele originale de la camera, iar ProRes-ul cu acelasi nume si aceeasi durata mosteneste gamma lor.
+- LUT-ul proiectului (lista **LUT**) se aplica doar clipurilor cu gamma necunoscuta sau log, niciodata celor rec709. Se tine minte pe proiect, iar ultimele LUT-uri folosite raman in lista.
+- **Pe camera**: reguli dupa inceputul numelui, modelul camerei sau gamma (ex: `DJI` > `DJI Mini 4 Pro D-Log M to Rec.709`, `ZV-E1` > LUT-ul Sony) si, dedesubt, LUT-ul automat pentru fiecare gamma intalnita, valabil in toate proiectele.
 - Miniaturile cu LUT se pastreaza separat: cand schimbi LUT-ul, cele vechi raman si revii instant la ele.
 - Previzualizarea cu LUT trece prin procesor (~30 de cadre pe secunda la 4K pe Mac Intel); fara LUT ramane pe placa video.
 
@@ -91,6 +93,14 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - Fisierele insotitoare cu acelasi nume (.XML Sony, .LRF/.SRT DJI, .THM) se muta impreuna cu clipul, la fel si audio-ul marcat SYNC.
 - **Cmd+Z** / "Anuleaza ultima mutare" muta inapoi ultimul lot. Merge de mai multe ori si chiar dupa redeschiderea aplicatiei (jurnalul e in `data/jurnal.jsonl`).
 - Cand sursa se goleste, aplicatia arata un rezumat pe foldere.
+
+## Meniul de sus si sesiunile
+
+- Toate functiile sunt si in meniul de sus: **Fisier, Editare, Foldere, Vizualizare, Previzualizare, Ajutor**, cu scurtaturile lor.
+- O **sesiune** = un folder de clipuri deschis, cu folderele alese, LUT-ul si istoricul de anulare.
+- **Fisier > Sterge sesiunea curenta** o uita pe cea deschisa; **Fisier > Sterge sesiuni...** arata lista, cu cele al caror folder nu mai exista deja bifate. Clipurile si folderele de pe disc nu se ating.
+- **Fisier > Goleste miniaturile salvate** elibereaza spatiul ocupat de miniaturi; se refac singure cand deschizi un folder.
+- **Cmd+1 / 2 / 3**: video si audio / doar video / doar audio.
 
 ## Alte scurtaturi
 

@@ -13,7 +13,7 @@ try:
     import numpy as np  # doar pentru LUT pe previzualizarea video
 except ImportError:
     np = None
-from PySide6.QtWidgets import (QStackedWidget, QGridLayout, QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QListView,
+from PySide6.QtWidgets import (QStackedWidget, QGridLayout, QListWidget, QListWidgetItem, QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QListView,
                                QLabel, QFileDialog, QInputDialog, QSlider, QCheckBox, QComboBox, QMessageBox,
                                QAbstractItemView, QSplitter, QLineEdit, QStyledItemDelegate, QStyle, QMenu, QToolButton,
                                QProgressBar, QSpinBox, QScrollArea, QColorDialog, QProgressDialog, QDialog, QTextBrowser,
@@ -152,6 +152,9 @@ class Clip:
     sample_rate: int = 0
     channels: int = 0
     group: int = 0
+    gamma: str = ''         # curba din metadatele camerei (ex: s-log3-cine, rec709)
+    camera: str = ''        # ex: Sony ZV-E1
+    gamma_guess: bool = False  # dedusa din prefixul numelui (fisier transcodat, invatat din originale)
     levels: list = None     # nivel de sunet (dB) in FRAMES puncte din clip; [] = fara sunet
 
     @property
@@ -167,6 +170,10 @@ class Clip:
         return self.created + self.duration
 
     def badge(self):
+        log = f" {self.gamma.split('-cine')[0].replace('-', '').upper()}" if 'log' in self.gamma else ''
+        return self.video_badge() + log if self.kind == 'video' else self.video_badge()
+
+    def video_badge(self):
         if self.kind == 'audio':
             rate = f' {self.sample_rate / 1000:g}k' if self.sample_rate else ''
             return f'AUDIO{rate} {self.channels}ch' if self.channels else f'AUDIO{rate}'
@@ -179,7 +186,7 @@ class Clip:
 def probe(path):
     """Durata, codec, rezolutie si ora filmarii, citite cu ffprobe."""
     meta = {'duration': 0.0, 'created': 0.0, 'codec': '', 'width': 0, 'height': 0, 'fps': 0.0, 'audio': '',
-            'sample_rate': 0, 'channels': 0}
+            'sample_rate': 0, 'channels': 0, 'gamma': '', 'camera': ''}
     if not FFPROBE:
         return meta
     try:
@@ -213,7 +220,32 @@ def probe(path):
             meta['audio'] = stream.get('codec_name', '')
             meta['sample_rate'] = int(stream.get('sample_rate') or 0)
             meta['channels'] = int(stream.get('channels') or 0)
+    if Path(path).suffix.lower() in EXT:
+        meta['gamma'], meta['camera'] = camera_meta(path)
     return meta
+
+
+def camera_meta(path):
+    """Gamma si camera din XML-ul Sony (NonRealTimeMeta), scris la inceputul sau la sfarsitul fisierului."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as fh:
+            data = fh.read(4 << 20)
+            if size > 8 << 20:
+                fh.seek(size - (4 << 20))
+                data += fh.read()
+    except OSError:
+        return '', ''
+    gamma = re.search(rb'CaptureGammaEquation" value="([^"]+)"', data)
+    device = re.search(rb'<Device manufacturer="([^"]*)" modelName="([^"]*)"', data)
+    return (gamma.group(1).decode('latin1').lower() if gamma else '',
+            (device.group(1) + b' ' + device.group(2)).decode('latin1').strip() if device else '')
+
+
+def name_prefix(name):
+    # prefixul camerei din numele fisierului: DAN6259 -> DAN, URDEA7057 -> URDEA
+    found = re.match(r'[A-Za-z]+', name)
+    return found.group(0).upper() if found else ''
 
 
 def clip_key(name, size, mtime):
@@ -829,6 +861,10 @@ class Separator(QMainWindow):
         self.settings = load_json(SETTINGS_FILE, {})
         self.settings.setdefault('sabloane', TEMPLATES)
         self.settings.setdefault('proiecte', {})
+        if 'lut_gamma' not in self.settings:
+            # LUT-ul Sony din Premiere, daca exista, pentru clipurile S-Log3 (S-Gamut3.Cine)
+            sony = Path(premiere_luts()) / '1_SGamut3CineSLog3_To_LC-709.cube'
+            self.settings['lut_gamma'] = {'s-log3-cine': str(sony)} if sony.exists() else {}
         self.meta = load_json(META_FILE, {})
         self.thumb_w = int(self.settings.get('marime', 260))
         self.source = None          # folderul cu clipuri nesortate
@@ -1088,7 +1124,8 @@ class Separator(QMainWindow):
         self.lut_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.lut_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.lut_box.setMinimumContentsLength(14)
-        self.lut_box.setToolTip('LUT pentru miniaturi si previzualizare (ex: S-Log3 > Rec709). Fisierele nu se modifica.')
+        self.lut_box.setToolTip('LUT-ul proiectului, pentru clipurile log fara gamma cunoscuta. Clipurile Sony isi aleg singure\n'
+                                'LUT-ul dupa gamma (vezi "Pe camera"). Fisierele nu se modifica.')
         self.lut_box.activated.connect(self.lut_chosen)
         lut_row.addWidget(self.lut_box, 1)
         self.btn(lut_row, 'Pe camera', self.edit_lut_rules).setToolTip('LUT diferit dupa numele fisierului, ex: DJI > LUT-ul dronei')
@@ -1110,11 +1147,183 @@ class Separator(QMainWindow):
         else:
             split.setSizes([260, 900, 380])
 
-        for keys, fn in (('Ctrl+Z', self.undo), ('Ctrl+O', self.choose_source), ('Ctrl+N', lambda: self.add_category(True)),
-                         ('Ctrl+F', self.search.setFocus), ('F1', self.show_help), ('Ctrl+=', lambda: self.bump_size(40)),
-                         ('Ctrl+-', lambda: self.bump_size(-40)), ('Ctrl+G', self.select_group), ('Ctrl+Backspace', self.trash_selection)) + ((('Del', self.trash_selection),) if WIN else ()):
-            QShortcut(QKeySequence(keys), self).activated.connect(fn)
+        self.build_menus()
         self.statusBar().showMessage('Gata')
+
+    def build_menus(self):
+        """Meniul de sus (pe Mac in bara sistemului). Tastele simple (1-9, G, Q, Spatiu) raman doar in grila."""
+        bar = self.menuBar()
+
+        def add(menu, text, fn, keys=None, hint=None):
+            action = menu.addAction(ui(text) + (f'\t{hint}' if hint else ''))
+            action.triggered.connect(lambda _=False: fn())
+            if keys:
+                action.setShortcuts([QKeySequence(k) for k in keys])
+            return action
+
+        files = bar.addMenu('Fisier')
+        add(files, 'Deschide folder clipuri...', self.choose_source, ['Ctrl+O'])
+        self.recent_menu = files.addMenu('Sesiuni recente')
+        self.recent_menu.aboutToShow.connect(self.fill_recent_menu)
+        add(files, 'Schimba destinatia...', self.choose_dest)
+        files.addSeparator()
+        add(files, 'Sterge sesiunea curenta...', self.forget_current_session)
+        add(files, 'Sterge sesiuni...', self.forget_sessions)
+        add(files, 'Goleste miniaturile salvate...', self.clear_thumbnails)
+        files.addSeparator()
+        add(files, 'Deschide folderul de date', lambda: self.open_in_finder(DATA))
+
+        edit = bar.addMenu('Editare')
+        add(edit, 'Anuleaza ultima mutare', self.undo, ['Ctrl+Z'])
+        edit.addSeparator()
+        add(edit, 'Selecteaza tot', self.grid.selectAll, ['Ctrl+A'])
+        add(edit, 'Selecteaza tot grupul', self.select_group, ['Ctrl+G'], None)
+        add(edit, 'Selecteaza clipurile scurte', self.select_short)
+        add(edit, 'Cauta in nume', self.search.setFocus, ['Ctrl+F'])
+        edit.addSeparator()
+        add(edit, 'Sterge in Cos', self.trash_selection, ['Ctrl+Backspace'] + (['Del'] if WIN else []))
+
+        folders = bar.addMenu('Foldere')
+        add(folders, '+ Eticheta noua...', lambda: self.add_category(False))
+        add(folders, '+ Folder nou...', lambda: self.add_category(True), ['Ctrl+N'])
+        add(folders, 'Folder nou si muta selectia acolo...', lambda: self.add_category(True, move_after=True), ['Ctrl+Shift+N'])
+        add(folders, 'Sabloane de foldere...', self.template_menu)
+        add(folders, 'Creeaza acum toate folderele pe disc', lambda: self.create_all() if self.source else None)
+        add(folders, 'Inapoi la nesortate', lambda: self.show_folder(self.source))
+
+        view = bar.addMenu('Vizualizare')
+        for i, text in enumerate(('Video si audio', 'Doar video', 'Doar audio')):
+            add(view, text, lambda i=i: self.kind_box.setCurrentIndex(i), [f'Ctrl+{i + 1}'])
+        view.addSeparator()
+        for i in range(self.sort_box.count()):
+            add(view, 'Ordine: ' + self.sort_box.itemText(i), lambda i=i: self.sort_box.setCurrentIndex(i))
+        view.addSeparator()
+        add(view, 'Miniaturi mai mari', lambda: self.bump_size(40), ['Ctrl+='])
+        add(view, 'Miniaturi mai mici', lambda: self.bump_size(-40), ['Ctrl+-'])
+
+        play = bar.addMenu('Previzualizare')
+        add(play, 'Reda / Pauza', self.toggle_play, hint='Spatiu')
+        add(play, 'Partea cu sunet', self.play_loudest, hint='Q')
+        add(play, 'Sunet pornit / oprit', self.mute.toggle, hint='M')
+        add(play, 'Deschide in IINA', self.open_external, hint='Enter')
+        add(play, 'Arata in Finder', self.reveal, hint='R')
+        play.addSeparator()
+        add(play, 'Alege LUT...', lambda: self.lut_chosen(self.lut_box.findData('__alege__')))
+        add(play, 'LUT pe camera...', self.edit_lut_rules)
+
+        helpm = bar.addMenu('Ajutor')
+        add(helpm, 'Ajutor Separare Clipuri', self.show_help, ['F1'])
+        add(helpm, 'Despre', lambda: QMessageBox.about(self, 'Separare Clipuri', f'Separare Clipuri {VERSION}\n'
+                                                                             'Sortarea clipurilor pe foldere inainte de edit.'))
+
+    def fill_recent_menu(self):
+        self.recent_menu.clear()
+        for path in self.settings.get('recente', []):
+            action = self.recent_menu.addAction(f'{Path(path).parent.name} / {Path(path).name}')
+            action.setEnabled(Path(path).is_dir())
+            action.triggered.connect(lambda _=False, p=path: self.open_source(p))
+        if self.recent_menu.isEmpty():
+            self.recent_menu.addAction('(nicio sesiune)').setEnabled(False)
+
+    # ---------- sesiuni: ce tine minte aplicatia, nu fisierele de pe disc
+
+    def forget(self, paths):
+        """Sterge sesiunile (foldere, LUT, istoricul mutarilor) din memoria aplicatiei; nu atinge nimic pe disc."""
+        paths = set(paths)
+        for path in paths:
+            self.settings['proiecte'].pop(path, None)
+        self.settings['recente'] = [p for p in self.settings.get('recente', []) if p not in paths]
+        if self.settings.get('ultima_sursa') in paths:
+            self.settings.pop('ultima_sursa')
+        try:
+            lines = JOURNAL_FILE.read_text(encoding='utf-8').splitlines()
+            kept = [l for l in lines if json.loads(l).get('sursa') not in paths]
+            JOURNAL_FILE.write_text(''.join(l + '\n' for l in kept), encoding='utf-8')
+        except (OSError, ValueError):
+            pass
+        if self.source and str(self.source) in paths:
+            self.source = self.view_dir = None
+            self.all_clips, self.cats, self.undo_stack = [], [], []
+            self.model.set_clips([])
+            self.release_preview({self.loaded_preview})
+            self.rebuild_categories()
+            self.undo_btn.setEnabled(False)
+            self.progress.setValue(0)
+            self.view_label.setText('Deschide folderul cu clipurile transcodate')
+            self.back_btn.hide()
+            self.info.setText('')
+        self.recent.blockSignals(True)
+        self.recent.clear()
+        for path in self.settings['recente']:
+            self.recent.addItem(f'{Path(path).parent.name} / {Path(path).name}', path)
+        self.recent.setCurrentIndex(-1 if not self.source else 0)
+        self.recent.blockSignals(False)
+        self.save_settings()
+
+    def forget_current_session(self):
+        if not self.source:
+            return self.statusBar().showMessage('Nicio sesiune deschisa', 4000)
+        answer = QMessageBox.question(self, 'Sterge sesiunea', f'Uit sesiunea {self.source.name}?\n\n'
+                                      'Se sterg din aplicatie folderele alese, LUT-ul si istoricul de anulare.\n'
+                                      'Clipurile si folderele de pe disc raman exact cum sunt.')
+        if answer == QMessageBox.StandardButton.Yes:
+            self.forget([str(self.source)])
+
+    def forget_sessions(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Sterge sesiuni')
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+        note = QLabel('Bifeaza sesiunile de uitat. Clipurile si folderele de pe disc nu se ating.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        listing = QListWidget()
+        for path in sorted(self.settings['proiecte']):
+            item = QListWidgetItem(f'{Path(path).parent.name} / {Path(path).name}' + ('' if Path(path).is_dir() else '   (folder lipsa)'))
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if not Path(path).is_dir() else Qt.CheckState.Unchecked)
+            item.setToolTip(path)
+            listing.addItem(item)
+        layout.addWidget(listing)
+        row = QHBoxLayout()
+        layout.addLayout(row)
+        row.addStretch()
+        cancel = QPushButton('Renunta')
+        cancel.clicked.connect(dialog.reject)
+        ok = QPushButton('Sterge bifate')
+        ok.clicked.connect(dialog.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        if dialog.exec():
+            chosen = [listing.item(i).data(Qt.ItemDataRole.UserRole) for i in range(listing.count())
+                      if listing.item(i).checkState() == Qt.CheckState.Checked]
+            if chosen:
+                self.forget(chosen)
+                self.statusBar().showMessage(f'{len(chosen)} sesiuni sterse din aplicatie', 5000)
+
+    def clear_thumbnails(self):
+        files = [f for f in THUMBS.iterdir() if f.is_file()] if THUMBS.exists() else []
+        size = sum(f.stat().st_size for f in files)
+        answer = QMessageBox.question(self, 'Miniaturi', f'Sterg {len(files)} miniaturi salvate ({human_size(size)})?\n'
+                                      'Se refac singure, in fundal, cand deschizi din nou un folder.')
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.thumb_pool.clear()
+        self.thumb_pool.waitForDone(5000)
+        for f in files:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.frames.clear()
+        self.pending.clear()
+        QPixmapCache.clear()
+        if self.source:
+            for clip in self.all_clips:
+                self.scan_frames(clip)
+            self.queue_frames()
+        self.grid.viewport().update()
 
     def btn(self, layout, text, fn):
         b = QPushButton(text)
@@ -1181,7 +1390,7 @@ class Separator(QMainWindow):
             return
         self.view_dir = Path(folder)
         clips = list_clips(self.view_dir)
-        missing = [c for c in clips if c.key not in self.meta]
+        missing = [c for c in clips if c.key not in self.meta or 'gamma' not in self.meta[c.key]]
         if missing:
             dialog = QProgressDialog('Citesc durata si ora filmarii...', None, 0, len(missing), self)
             dialog.setWindowModality(Qt.WindowModality.WindowModal)
@@ -1189,14 +1398,15 @@ class Separator(QMainWindow):
             with ThreadPoolExecutor(6) as pool:
                 futures = {pool.submit(probe, c.path): c for c in missing}
                 for n, future in enumerate(as_completed(futures), 1):
-                    self.meta[futures[future].key] = future.result()
+                    key = futures[future].key
+                    self.meta[key] = {**self.meta.get(key, {}), **future.result()}  # pastreaza nivelurile masurate
                     dialog.setValue(n)
                     QApplication.processEvents()
             dialog.close()
             save_json(META_FILE, self.meta)
         for clip in clips:
             m = self.meta.get(clip.key, {})
-            for field in ('duration', 'codec', 'width', 'height', 'fps', 'audio', 'sample_rate', 'channels'):
+            for field in ('duration', 'codec', 'width', 'height', 'fps', 'audio', 'sample_rate', 'channels', 'gamma', 'camera'):
                 setattr(clip, field, m.get(field, getattr(clip, field)))
             # recorderele scriu ora modificarii la sfarsitul inregistrarii
             clip.created = m.get('created') or (clip.mtime - clip.duration if clip.kind == 'audio' else clip.mtime)
@@ -1204,6 +1414,7 @@ class Separator(QMainWindow):
             if clip.levels is None and clip.kind == 'video' and 'audio' in m and not m['audio']:
                 clip.levels = []
             self.scan_frames(clip)
+        self.learn_gamma(clips)
         self.all_clips = clips
         assign_groups(self.all_clips, self.gap.value())
         in_source = self.view_dir == self.source
@@ -1215,6 +1426,29 @@ class Separator(QMainWindow):
         if self.model.rowCount():
             self.grid.setCurrentIndex(self.model.index(0))
         self.grid.setFocus()
+
+    def learn_gamma(self, clips):
+        """Originalele spun ce gamma are fiecare clip; fisierele transcodate o mostenesc dupa nume si durata
+        (DAN6259 de 1:31 > DAN6259 de 1:31). Ca rezerva, dupa prefixul camerei, doar daca a filmat mereu la fel."""
+        by_name = self.settings.setdefault('gamma_nume', {})
+        by_prefix = self.settings.setdefault('gamma_prefix', {})
+        for clip in clips:
+            prefix = name_prefix(clip.name)
+            if clip.kind != 'video' or not clip.gamma:
+                continue
+            by_name[f'{Path(clip.name).stem.upper()}|{round(clip.duration)}'] = clip.gamma
+            if prefix:
+                by_prefix[prefix] = clip.gamma if by_prefix.get(prefix, clip.gamma) == clip.gamma else '?'  # ? = profile diferite
+        for old in list(by_name)[:-20000]:  # memoria nu creste la nesfarsit
+            del by_name[old]
+        for clip in clips:
+            if clip.kind != 'video' or clip.gamma:
+                continue
+            stem, seconds = Path(clip.name).stem.upper(), round(clip.duration)
+            guess = next((by_name[k] for k in (f'{stem}|{seconds}', f'{stem}|{seconds - 1}', f'{stem}|{seconds + 1}') if k in by_name),
+                         by_prefix.get(name_prefix(clip.name), ''))
+            if guess not in ('', '?'):
+                clip.gamma, clip.gamma_guess = guess, True
 
     def regroup(self):
         assign_groups(self.all_clips, self.gap.value())
@@ -1265,6 +1499,7 @@ class Separator(QMainWindow):
         while self.cat_layout.count():
             item = self.cat_layout.takeAt(0)
             if item.widget():
+                item.widget().hide()  # altfel ramane desenat pana la urmatoarea trecere prin bucla de evenimente
                 item.widget().deleteLater()
         for i, cat in enumerate(self.cats):
             row = QWidget()
@@ -1663,14 +1898,21 @@ class Separator(QMainWindow):
         return self.luts[path]
 
     def lut_for(self, clip):
-        """LUT-ul clipului: regula de camera dupa prefixul numelui, altfel LUT-ul proiectului."""
+        """LUT-ul clipului, in ordine: regula proiectului (prefix nume, model camera sau gamma),
+        LUT-ul automat pentru gamma camerei, apoi LUT-ul proiectului doar daca gamma e necunoscuta sau log."""
         if clip.kind == 'audio' or not self.source:
             return None
         project = self.project()
-        name = clip.name.lower()
+        name, gamma, camera = clip.name.lower(), clip.gamma.lower(), clip.camera.lower()
         for rule in project.get('reguli_lut', []):
-            if rule['prefix'] and name.startswith(rule['prefix'].lower()):
+            key = rule['prefix'].lower().strip()
+            if key and (name.startswith(key) or key == gamma or (len(key) >= 3 and key in camera)):
                 return self.load_lut(rule['lut'])
+        auto = self.settings.get('lut_gamma', {})
+        if gamma in auto:
+            return self.load_lut(auto[gamma])
+        if gamma and 'log' not in gamma:
+            return None  # camera a filmat normal (rec709, HLG): LUT-ul de log ar strica imaginea
         return self.load_lut(project.get('lut', ''))
 
     def fkey(self, clip):
@@ -1736,8 +1978,8 @@ class Separator(QMainWindow):
         dialog.setWindowTitle('LUT pe camera')
         dialog.resize(640, 300)
         layout = QVBoxLayout(dialog)
-        info = QLabel('Clipurile al caror nume incepe cu prefixul primesc LUT-ul ales; restul primesc LUT-ul proiectului.\n'
-                      'Ex: DJI > DJI Mini 4 Pro D-Log M to Rec.709, sau C0 > Fara LUT pentru o camera filmata fara log.')
+        info = QLabel('Regula se potriveste dupa inceputul numelui, modelul camerei sau gamma. '
+                      'Ex: DJI > DJI Mini 4 Pro D-Log M to Rec.709, ZV-E1 > LUT-ul Sony, URDEA > Fara LUT.')
         info.setWordWrap(True)
         layout.addWidget(info)
         grid = QGridLayout()
@@ -1746,7 +1988,7 @@ class Separator(QMainWindow):
 
         def add_row(prefix='', lut=''):
             edit = QLineEdit(prefix)
-            edit.setPlaceholderText('prefix nume, ex: DJI')
+            edit.setPlaceholderText('nume, camera sau gamma')
             box = QComboBox()
             self.fill_lut_box(box, lut)
             box.activated.connect(lambda i, b=box: self.fill_lut_box(b, self.choose_lut_file() or '')
@@ -1764,6 +2006,23 @@ class Separator(QMainWindow):
             add_row(rule['prefix'], rule['lut'])
         if not rows:
             add_row()
+        gammas = sorted({c.gamma for c in self.all_clips if c.gamma} | set(self.settings.get('lut_gamma', {})))
+        gamma_rows = []
+        if gammas:
+            head = QLabel('Automat dupa gamma camerei (pentru toate proiectele; la ProRes se deduce din originale dupa prefix):')
+            head.setWordWrap(True)
+            layout.addWidget(head)
+            ggrid = QGridLayout()
+            layout.addLayout(ggrid)
+            for n, gamma in enumerate(gammas):
+                box = QComboBox()
+                self.fill_lut_box(box, self.settings.get('lut_gamma', {}).get(gamma, ''))
+                box.activated.connect(lambda i, b=box: self.fill_lut_box(b, self.choose_lut_file() or '')
+                                      if b.itemData(i) == '__alege__' else None)
+                ggrid.addWidget(QLabel(gamma), n, 0)
+                ggrid.addWidget(box, n, 1)
+                ggrid.setColumnStretch(1, 1)
+                gamma_rows.append((gamma, box))
         buttons = QHBoxLayout()
         layout.addStretch()
         layout.addLayout(buttons)
@@ -1778,6 +2037,7 @@ class Separator(QMainWindow):
         buttons.addWidget(cancel)
         buttons.addWidget(save)
         if dialog.exec():
+            self.settings['lut_gamma'] = {g: b.currentData() for g, b in gamma_rows if b.currentData() != '__alege__'}
             self.project()['reguli_lut'] = [{'prefix': e.text().strip(), 'lut': b.currentData() if b.currentData() != '__alege__' else ''}
                                             for e, b, _ in rows if e.text().strip()]
             self.save_settings()
@@ -1918,6 +2178,10 @@ class Separator(QMainWindow):
             tech = f'Audio {clip.audio} · {clip.sample_rate / 1000:g} kHz · {clip.channels} canale<br>Inregistrat: {when}<br>'
         else:
             tech = f'{clip.codec} {clip.width}x{clip.height} · {clip.fps:g} fps · audio {clip.audio or "-"}<br>Filmat: {when}<br>'
+            lut = self.lut_for(clip)
+            if clip.camera or clip.gamma or lut:
+                tech += (f'{clip.camera or "Camera"} · gamma {clip.gamma or "necunoscuta"}'
+                         + (' (dedusa din originale)' if clip.gamma_guess else '') + f' · LUT: {lut.name if lut else "fara"}<br>')
         if clip.levels:
             tech += f'Sunet: varf {max(clip.levels):.0f} dB, mediu {sum(clip.levels) / len(clip.levels):.0f} dB<br>'
         self.info.setText(f'<b style="font-size:15px">{clip.name}</b><br>'

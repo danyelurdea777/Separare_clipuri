@@ -28,7 +28,8 @@ Scurtatura pe Desktop: click dreapta pe `SeparareClipuri.exe` > Send to > Deskto
 - **Selecteaza scurte** + **Cmd+Backspace** (Mac) sau **Delete** (Windows): testele de expunere merg in Cos.
 - Fisierele audio de la recorder (WAV) apar langa clipuri si se muta automat cu clipurile filmate in acelasi timp (marcaj **SYNC**).
 - Barele de pe miniaturi arata unde e sunet; **Q** reda partea cu sunet.
-- **LUT** (dreapta jos): alegi un `.cube` (S-Log3, C-Log, V-Log, D-Log) si miniaturile si previzualizarea apar corectate; **Pe camera** pune LUT diferit dupa numele fisierului (ex: DJI).
+- **LUT**: clipurile Sony S-Log3 primesc automat LUT-ul Sony, cele rec709 raman normale; pentru alte camere alegi un `.cube` (C-Log, V-Log, D-Log) din lista **LUT** sau **Pe camera**.
+- Meniul de sus are toate functiile; **Fisier > Sterge sesiuni** curata lista de foldere deschise.
 - Ghidul complet: **F1** in aplicatie.
 
 ffmpeg: Windows, build LGPL de la BtbN/FFmpeg-Builds; Mac, build static de la ffmpeg.martin-riedl.de. Licentele ffmpeg se aplica acestor executabile.

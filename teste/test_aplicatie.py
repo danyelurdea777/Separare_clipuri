@@ -240,6 +240,49 @@ try:
         grey = QImage(2, 2, QImage.Format.Format_RGB888); grey.fill(QColor(105, 105, 105))  # gri 18% in S-Log3
         out = QColor(lut.apply(grey).pixel(0, 0))
         check(lut.size == 33 and 90 < out.red() < 140 and abs(out.red() - out.green()) < 12, f'LUT Sony S-Log3: gri 105 > {out.red()}')
+
+    # ---------- gamma camerei: originale Sony cu XML, transcodate fara, invatate dupa prefix
+    src3 = TMP / 'proiect3' / 'Originale'; src3.mkdir(parents=True)
+    src4 = TMP / 'proiect3' / 'ProRes'; src4.mkdir(parents=True)
+    def camera_clip(path, gamma=None, model=None):
+        args = [main.FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25:duration=2', '-c:v', 'prores_ks']
+        if gamma:
+            xml = (f'<NonRealTimeMeta><Item name="CaptureGammaEquation" value="{gamma}"/>'
+                   f'<Device manufacturer="Sony" modelName="{model}" serialNo="1"/></NonRealTimeMeta>')
+            args += ['-metadata', f'comment={xml}']
+        subprocess.run(args + ['-f', 'mov', '-y', str(path)], check=True, capture_output=True)
+    camera_clip(src3 / 'DAN0001.MP4', 's-log3-cine', 'ZV-E1'); camera_clip(src3 / 'URDEA0001.MP4', 'rec709', 'ILCE-7SM3')
+    camera_clip(src3 / 'DAN0003.MP4', 'rec709', 'ZV-E1')  # aceeasi camera, profil schimbat in timpul filmarii
+    for name in ('DAN0001.MP4', 'DAN0002.MP4', 'DAN0003.MP4', 'URDEA0002.MP4', 'X0001.MP4'):
+        camera_clip(src4 / name)
+    w.settings['lut_gamma'] = {'s-log3-cine': str(inv)}
+    w.open_source(str(src3))
+    by = {c.name: c for c in w.all_clips}
+    check(by['DAN0001.MP4'].gamma == 's-log3-cine' and by['DAN0001.MP4'].camera == 'Sony ZV-E1', 'gamma si camera citite din Sony')
+    check(w.lut_for(by['DAN0001.MP4']) is not None and w.lut_for(by['DAN0001.MP4']).tag == tag, 'S-Log3 primeste LUT automat')
+    check(w.lut_for(by['URDEA0001.MP4']) is None, 'rec709 ramane fara LUT')
+    check('SLOG3' in by['DAN0001.MP4'].badge(), f'eticheta SLOG3 pe miniatura ({by["DAN0001.MP4"].badge()})')
+    w.set_project_lut(str(inv))
+    check(w.lut_for(by['URDEA0001.MP4']) is None, 'LUT-ul proiectului nu strica clipurile rec709')
+    w.project()['reguli_lut'] = [{'prefix': 'ZV-E1', 'lut': ''}]
+    check(w.lut_for(by['DAN0001.MP4']) is None, 'regula dupa modelul camerei')
+    w.project()['reguli_lut'] = []
+    w.open_source(str(src4))
+    by = {c.name: c for c in w.all_clips}
+    check(by['DAN0001.MP4'].gamma == 's-log3-cine' and by['DAN0001.MP4'].gamma_guess and w.lut_for(by['DAN0001.MP4']) is not None,
+          'ProRes: gamma mostenita dupa nume si durata (S-Log3 > LUT)')
+    check(by['DAN0003.MP4'].gamma == 'rec709' and w.lut_for(by['DAN0003.MP4']) is None, 'ProRes: acelasi prefix dar rec709 > fara LUT')
+    check(by['DAN0002.MP4'].gamma == '', 'fara original si prefix amestecat: gamma necunoscuta')
+    check(by['URDEA0002.MP4'].gamma == 'rec709' and w.lut_for(by['URDEA0002.MP4']) is None, 'prefix cu profil constant: dedus (rec709)')
+    check(by['X0001.MP4'].gamma == '' and w.lut_for(by['X0001.MP4']) is None, 'camera necunoscuta: LUT-ul proiectului (aici fara)')
+    menus = [a.text() for a in w.menuBar().actions()]
+    check(menus == ['Fisier', 'Editare', 'Foldere', 'Vizualizare', 'Previzualizare', 'Ajutor'], f'meniul de sus ({menus})')
+    w.forget([str(src4)])
+    check(w.source is None and str(src4) not in w.settings['proiecte'] and str(src4) not in w.settings['recente']
+          and w.model.rowCount() == 0 and (src4 / 'DAN0002.MP4').exists(), 'sesiunea stearsa, fisierele raman')
+    w.open_source(str(src3))
+    check(w.model.rowCount() == 3, 'alta sesiune se deschide normal dupa stergere')
+    w.settings['lut_gamma'] = {}
     w.grab().save(str(TMP / 'captura.png'))
     w.close()
 except Exception:
