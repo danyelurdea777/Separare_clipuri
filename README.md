@@ -13,7 +13,7 @@ Daca muti folderul aplicatiei in alt loc, ruleaza din nou `Creeaza_app.command`.
 
 Link de dat mai departe, mereu ultima versiune:
 
-https://github.com/danyelurdea777/separare-clipuri/releases/latest
+https://github.com/danyelurdea777/Separare_clipuri/releases/latest
 
 Acolo sunt `SeparareClipuri-Windows.zip`, `SeparareClipuri-Mac-Intel.dmg` si `SeparareClipuri-Mac-AppleSilicon.dmg`, toate cu ffmpeg inclus. Instructiunile de instalare sunt in `INSTALARE.md` (apar si pe pagina release-ului).
 

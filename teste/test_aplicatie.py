@@ -8,7 +8,29 @@ TMP = Path(tempfile.mkdtemp(prefix='separare_test_'))
 os.environ['SEPARARE_DATA'] = str(TMP / 'data')
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+def report(msg, level='error'):
+    # pe GitHub, erorile devin adnotari vizibile in pagina build-ului
+    if CI:
+        print(f'::{level}::' + msg.replace('%', '%25').replace('\r', '').replace('\n', '%0A'), flush=True)
+
+def check(ok, msg):
+    print(('OK   ' if ok else 'FAIL ') + msg, flush=True)
+    if not ok:
+        check.failed = True
+        report(f'{sys.platform}: FAIL {msg}')
+check.failed = False
+
+def excepthook(kind, value, tb):
+    # orice exceptie neprinsa (import, pornire) ajunge si ea in adnotari
+    report(f'{sys.platform}: exceptie\n' + ''.join(traceback.format_exception(kind, value, tb)))
+    sys.__excepthook__(kind, value, tb)
+sys.excepthook = excepthook
+
 import main
+if main.MEDIA_ERROR:
+    print('Fara QtMultimedia (previzualizare dezactivata):', main.MEDIA_ERROR, flush=True)
+    report(f'{sys.platform}: QtMultimedia indisponibil, previzualizare dezactivata: {main.MEDIA_ERROR}', 'warning')
 from PySide6.QtCore import Qt, QItemSelectionModel
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtCore import QEvent
@@ -17,9 +39,12 @@ from PySide6.QtWidgets import QApplication
 assert main.FFMPEG and main.FFPROBE, 'ffmpeg si ffprobe sunt necesare pentru test'
 root = TMP / 'proiect'; src = root / 'Prores'; src.mkdir(parents=True)
 for i, t in enumerate(['10:00:00', '10:01:10', '10:02:30', '11:30:00', '11:31:00', '13:00:00'], 1):
-    subprocess.run([main.FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25:duration=4',
-                    '-f', 'lavfi', '-i', 'sine=d=4', '-c:v', 'prores_ks', '-profile:v', '0', '-c:a', 'pcm_s16le',
-                    '-metadata', f'creation_time=2026-04-26T{t}Z', '-f', 'mov', '-y', str(src / f'DAN000{i}.MP4')], check=True)
+    made = subprocess.run([main.FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25:duration=4',
+                           '-f', 'lavfi', '-i', 'sine=d=4', '-c:v', 'prores_ks', '-profile:v', '0', '-c:a', 'pcm_s16le',
+                           '-metadata', f'creation_time=2026-04-26T{t}Z', '-f', 'mov', '-y', str(src / f'DAN000{i}.MP4')],
+                          capture_output=True, text=True)
+    if made.returncode:
+        raise RuntimeError('ffmpeg nu a creat clipurile de test: ' + made.stderr)
 (src / 'DAN0001.XML').write_text('x')
 app = QApplication([]); app.setStyleSheet(main.STYLE)
 w = main.Separator(); w.resize(1500, 900); w.show()
@@ -35,17 +60,6 @@ def wait(cond, sec=60):
 def key(k):
     app.sendEvent(w.grid, QKeyEvent(QEvent.Type.KeyPress, k, Qt.KeyboardModifier.NoModifier))
 
-def report(msg):
-    # pe GitHub, erorile devin adnotari vizibile in pagina build-ului
-    if CI:
-        print('::error::' + msg.replace('%', '%25').replace('\r', '').replace('\n', '%0A'), flush=True)
-
-def check(ok, msg):
-    print(('OK   ' if ok else 'FAIL ') + msg, flush=True)
-    if not ok:
-        check.failed = True
-        report(f'{sys.platform}: FAIL {msg}')
-check.failed = False
 
 # dialogurile modale ar bloca testul: le inregistram ca erori
 from PySide6.QtWidgets import QMessageBox
@@ -121,6 +135,6 @@ try:
 except Exception:
     check.failed = True
     print(traceback.format_exc(), flush=True)
-    report(f'{sys.platform}: exceptie%0A' + traceback.format_exc())
+    report(f'{sys.platform}: exceptie\n' + traceback.format_exc())
 print('REZULTAT:', 'ESEC' if check.failed else 'TOATE TESTELE AU TRECUT', '·', TMP)
 sys.exit(1 if check.failed else 0)

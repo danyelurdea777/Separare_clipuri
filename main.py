@@ -14,8 +14,15 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
                                QAbstractItemView, QSplitter, QLineEdit, QStyledItemDelegate, QStyle, QMenu, QToolButton,
                                QProgressBar, QSpinBox, QScrollArea, QColorDialog, QProgressDialog, QDialog, QTextBrowser,
                                QSizePolicy, QFrame)
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtMultimediaWidgets import QVideoWidget
+try:
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    MEDIA_ERROR = ''
+except ImportError as exc:
+    # ex: Windows fara Media Foundation; sortarea merge, doar previzualizarea video lipseste
+    QMediaPlayer = QAudioOutput = None
+    QVideoWidget = QWidget
+    MEDIA_ERROR = str(exc)
 
 MAC = sys.platform == 'darwin'
 WIN = os.name == 'nt'
@@ -513,6 +520,17 @@ class FolderButton(QPushButton):
         self.dropped.emit()
 
 
+class NullPlayer(QObject):
+    """Inlocuieste playerul si iesirea audio cand QtMultimedia lipseste: orice apel nu face nimic."""
+    mediaStatusChanged = Signal(object)
+    errorOccurred = Signal(object, str)
+    durationChanged = Signal(int)
+    positionChanged = Signal(int)
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: 0
+
+
 class PreviewVideo(QVideoWidget):
     clicked = Signal()
 
@@ -708,8 +726,8 @@ class Separator(QMainWindow):
         self.video.setMinimumHeight(200)
         self.video.clicked.connect(self.toggle_play)
         rl.addWidget(self.video, 3)
-        self.player = QMediaPlayer(self)
-        self.audio = QAudioOutput(self)
+        self.player = QMediaPlayer(self) if QMediaPlayer else NullPlayer(self)
+        self.audio = QAudioOutput(self) if QAudioOutput else NullPlayer(self)
         self.audio.setVolume(0.6)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
@@ -1323,7 +1341,8 @@ class Separator(QMainWindow):
                           f'{clip.codec} {clip.width}x{clip.height} · {clip.fps:g} fps · audio {clip.audio or "-"}<br>'
                           f'Filmat: {when}<br>'
                           f'<span style="color:{group_color(clip.group).name()}">Grup {clip.group}: {same_group} clipuri</span> (G = selecteaza tot grupul)<br>'
-                          f'<span style="color:#7d8a98">{clip.path.parent}</span>')
+                          f'<span style="color:#7d8a98">{clip.path.parent}</span>'
+                          + (f'<br><span style="color:#ffb4b4">Previzualizare video indisponibila: {MEDIA_ERROR}</span>' if MEDIA_ERROR else ''))
         if self.loaded_preview != clip.path:
             self.loaded_preview = clip.path
             self.player.setSource(QUrl.fromLocalFile(str(clip.path)))
@@ -1331,7 +1350,7 @@ class Separator(QMainWindow):
                 self.player.play()
 
     def media_status(self, status):
-        if status == QMediaPlayer.MediaStatus.LoadedMedia and not self.autoplay.isChecked():
+        if QMediaPlayer and status == QMediaPlayer.MediaStatus.LoadedMedia and not self.autoplay.isChecked():
             # arata un cadru din clip fara sa porneasca redarea
             self.player.setPosition(int(self.player.duration() * (POSTER + 0.5) / FRAMES))
             self.player.pause()
@@ -1342,6 +1361,8 @@ class Separator(QMainWindow):
         self.time_label.setText(f'{human_dur(ms / 1000)} / {human_dur(self.player.duration() / 1000)}')
 
     def toggle_play(self):
+        if not QMediaPlayer:
+            return self.statusBar().showMessage('Previzualizarea video nu e disponibila pe acest sistem: ' + MEDIA_ERROR, 8000)
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
