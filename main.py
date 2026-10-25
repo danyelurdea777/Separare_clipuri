@@ -1147,7 +1147,9 @@ class Separator(QMainWindow):
             for f in [clip.path] + sidecars(clip.path):
                 q = QFile(str(f))
                 if q.moveToTrash():
-                    pairs.append((str(f), q.fileName()))
+                    # fara cale in Cos (ex: Cos dezactivat) stergerea nu mai poate fi anulata
+                    if q.fileName() != str(f) and os.path.exists(q.fileName()):
+                        pairs.append((str(f), q.fileName()))
                 else:
                     ok = False
                     errors.append(f.name)

@@ -16,9 +16,10 @@ env:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -35,6 +36,7 @@ jobs:
         run: pip install -r requirements.txt pyinstaller pillow
 
       - name: Teste
+        timeout-minutes: 10
         run: python teste/test_aplicatie.py
 
       - name: Build
@@ -72,9 +74,10 @@ jobs:
             arch: arm64
             name: AppleSilicon
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -92,6 +95,7 @@ jobs:
         run: pip install -r requirements.txt pyinstaller pillow
 
       - name: Teste
+        timeout-minutes: 10
         run: python teste/test_aplicatie.py
 
       - name: Build
@@ -125,7 +129,7 @@ jobs:
     needs: [windows, mac]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Versiune
         id: v
