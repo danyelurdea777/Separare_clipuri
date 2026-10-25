@@ -1936,7 +1936,13 @@ class Separator(QMainWindow):
 
     def media_status(self, status):
         if QMediaPlayer and status == QMediaPlayer.MediaStatus.LoadedMedia and not self.autoplay.isChecked():
-            # arata un cadru din clip fara sa porneasca redarea
+            # amanat: pause() apelat direct din acest semnal blocheaza playerul (zavor in pluginul FFmpeg al Qt)
+            QTimer.singleShot(0, self.show_poster_frame)
+
+    def show_poster_frame(self):
+        # arata un cadru din clip fara sa porneasca redarea
+        if (self.player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia
+                and self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState):
             self.player.setPosition(int(self.player.duration() * (POSTER + 0.5) / FRAMES))
             self.player.pause()
 

@@ -223,6 +223,17 @@ try:
     w.project()['reguli_lut'] = []
     w.set_project_lut('')
     check(w.fkey(v3) == v3.key and w.project()['lut'] == '', 'LUT scos')
+    if not main.MEDIA_ERROR:
+        # din semnalul "clip incarcat" playerul nu trebuie atins direct: in fereastra reala se blocheaza
+        calls = []
+        w.player.pause = lambda: calls.append('pause')
+        w.player.mediaStatus = lambda: main.QMediaPlayer.MediaStatus.LoadedMedia
+        w.player.playbackState = lambda: main.QMediaPlayer.PlaybackState.PausedState
+        w.media_status(main.QMediaPlayer.MediaStatus.LoadedMedia)
+        check(not calls, 'pauza nu se cere din semnalul playerului (fara blocaj)')
+        wait(lambda: calls, 5)
+        check(bool(calls) and set(calls) == {'pause'}, 'cadrul de previzualizare apare imediat dupa incarcare')
+        del w.player.pause, w.player.mediaStatus, w.player.playbackState
     sony = Path('/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app/Contents/Lumetri/LUTs/1_SGamut3CineSLog3_To_LC-709.cube')
     if sony.exists():
         lut = main.CubeLut(sony)
