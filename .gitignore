@@ -1,0 +1,12 @@
+.venv/
+data/
+__pycache__/
+*.app
+build/
+dist/
+*.spec
+ffmpeg/
+ff/
+ff.zip
+icon.png
+.DS_Store
