@@ -278,6 +278,7 @@ def clip_key(name, size, mtime):
 
 def scan_event_media(root, tracks, exclusions=()):
     """Select media from card layouts, never from arbitrary event categories."""
+    root = Path(root).resolve()
     files = []
     for folder, dirs, names in os.walk(root):
         dirs[:] = sorted(d for d in dirs if not d.startswith('.')
@@ -314,6 +315,46 @@ def event_clips(root, tracks, exclusions=()):
             continue
         clips.append(Clip(path, st.st_size, st.st_mtime, clip_key(path.name, st.st_size, st.st_mtime)))
     return clips
+
+
+def project_xml(root, destination):
+    for folder, dirs, files in os.walk(root):
+        base = Path(folder)
+        dirs[:] = sorted(name for name in dirs if not name.startswith('.')
+                         and name.casefold() not in ('database', 'trash', 'false take', 'f6_settings')
+                         and base / name != destination)
+        for name in sorted(files):
+            path = base / name
+            if (not name.startswith('.') and path.suffix.casefold() == '.xml'
+                    and name.casefold() != 'mediapro.xml' and not path.is_symlink()
+                    and path.is_file()):
+                yield path
+
+
+def xml_copy_plan(source, target):
+    source, target = source.resolve(), target.resolve()
+    videos = {}
+    for path in target.rglob('*'):
+        if path.suffix.casefold() in EXT and path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(target):
+            videos.setdefault(path.stem.casefold(), []).append(path)
+    candidates, skipped = {}, 0
+    for path in project_xml(source, target):
+        stem = path.stem.casefold()
+        keys = {stem, re.sub(r'm\d{2}$', '', stem)}
+        matches = [video for key in keys for video in videos.get(key, [])]
+        if len(matches) != 1:
+            skipped += 1
+            continue
+        destination = matches[0].parent / path.name
+        candidates.setdefault((destination.parent, destination.name.casefold()), []).append((path, destination))
+    plan = []
+    for entries in candidates.values():
+        source_file, destination = entries[0]
+        if len(entries) != 1 or any(p.name.casefold() == destination.name.casefold() for p in destination.parent.iterdir()):
+            skipped += len(entries)
+        else:
+            plan.append((source_file, destination))
+    return plan, skipped
 
 
 def list_clips(folder):
@@ -466,7 +507,7 @@ class Signals(QObject):
     frame_done = Signal(str, int)
     frame_failed = Signal(str, int)
     move_progress = Signal(int, int, int, str)
-    move_done = Signal(int, list)
+    move_done = Signal(int, list, list)
     wave_done = Signal(str)
     levels_done = Signal(str, list)
 
@@ -559,7 +600,7 @@ class MoveJob(QRunnable):
         self.allow_copy = allow_copy
 
     def run(self):
-        errors = []
+        errors, moved = [], []
         for done, (src, dst) in enumerate(self.pairs, 1):
             try:
                 if os.path.exists(dst):
@@ -577,10 +618,11 @@ class MoveJob(QRunnable):
                         raise OSError('copia are alta marime decat originalul')
                     os.rename(dst + '.partial', dst)
                     os.remove(src)
+                moved.append((src, dst))
             except OSError as exc:
                 errors.append(f'{os.path.basename(src)}: {exc}')
             self.signals.move_progress.emit(self.batch_id, done, len(self.pairs), self.label)
-        self.signals.move_done.emit(self.batch_id, errors)
+        self.signals.move_done.emit(self.batch_id, errors, moved)
 
 
 # ---------------------------------------------------------------- grila de miniaturi
@@ -1007,7 +1049,7 @@ class Separator(QMainWindow):
         else:
             self.resize(1500, 920)
         last = self.settings.get('ultima_sursa')
-        if last and Path(last).is_dir():
+        if last:
             QTimer.singleShot(0, lambda: self.open_source(last))
 
     # ---------- interfata
@@ -1021,11 +1063,19 @@ class Separator(QMainWindow):
         bar = QHBoxLayout()
         outer.addLayout(bar)
         self.btn(bar, 'Deschide folder clipuri', self.choose_source).setToolTip(ui('Cmd+O · sau trage un folder din Finder peste fereastra'))
+        self.current_event_label = QLabel('Eveniment curent: —')
+        self.current_event_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.current_event_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        bar.addWidget(self.current_event_label, 2)
         self.recent = QComboBox()
-        self.recent.setMinimumWidth(200)
-        self.recent.setToolTip('Folderele deschise recent')
-        self.recent.activated.connect(lambda i: self.open_source(self.recent.itemData(i)))
-        bar.addWidget(self.recent, 2)
+        self.recent.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.recent.setMinimumContentsLength(15)
+        self.recent.setPlaceholderText('Sesiuni recente')
+        self.recent.setToolTip('Redeschide sau schimbă sesiunea. Nu trebuie să selectezi din nou evenimentul curent.')
+        self.recent.activated.connect(self.open_recent_session)
+        bar.addWidget(self.recent)
+        self.btn(bar, "↻ Reîmprospătează", self.refresh_folder).setToolTip("Recitește folderul afișat și actualizează numărul de clipuri din categorii.")
+        self.fill_recent_box()
         self.dest_btn = self.btn(bar, 'Destinatie: -', self.choose_dest)
         self.dest_btn.setToolTip('Folderul in care se creeaza folderele categoriilor')
         bar.addSpacing(10)
@@ -1106,6 +1156,8 @@ class Separator(QMainWindow):
         self.transfer_toggle.toggled.connect(self.set_transfer_mode)
         ll.addWidget(self.transfer_toggle)
         self.btn(ll, "Pregătire eveniment…", self.event_setup)
+        self.btn(ll, 'Adună XML-urile', self.collect_xml)
+        self.btn(ll, 'Resetare sesiune', self.reset_session).setToolTip('Revine la nesortate și golește filtrele și etichetele. Nu șterge foldere sau fișiere.')
         head = QLabel('MUTA IN FOLDER')
         self.folder_head = head
         head.setStyleSheet('color:#9aa8b6; font-weight:bold;')
@@ -1121,7 +1173,7 @@ class Separator(QMainWindow):
         self.audio_follow.setToolTip('Fisierele audio inregistrate in acelasi timp cu clipurile selectate (marcate SYNC)\n'
                                      'se muta impreuna cu ele. Cele marcate "SYNC partial" acopera si alte clipuri\n'
                                      'nesortate inca, asa ca raman pana muti si ultimul clip cu care se suprapun.')
-        self.audio_follow.toggled.connect(lambda _: self.selection_changed())
+        self.audio_follow.toggled.connect(self.audio_follow_changed)
         ll.addWidget(self.audio_follow)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1300,6 +1352,7 @@ class Separator(QMainWindow):
         add(edit, 'Sterge in Cos', self.trash_selection, ['Ctrl+Backspace'] + (['Del'] if WIN else []))
 
         folders = bar.addMenu('Foldere')
+        add(folders, 'Copiază XML lângă clipuri…', self.restore_xml_next_to_clips)
         add(folders, '+ Eticheta noua...', lambda: self.add_category(False))
         add(folders, '+ Folder nou...', lambda: self.add_category(True), ['Ctrl+N'])
         add(folders, 'Folder nou si muta selectia acolo...', lambda: self.add_category(True, move_after=True), ['Ctrl+Shift+N'])
@@ -1336,7 +1389,8 @@ class Separator(QMainWindow):
         self.recent_menu.clear()
         for path in self.settings.get('recente', []):
             action = self.recent_menu.addAction(f'{Path(path).parent.name} / {Path(path).name}')
-            action.setEnabled(Path(path).is_dir())
+            if not Path(path).is_dir():
+                action.setText(action.text() + " · folder indisponibil")
             action.triggered.connect(lambda _=False, p=path: self.open_source(p))
         if self.recent_menu.isEmpty():
             self.recent_menu.addAction('(nicio sesiune)').setEnabled(False)
@@ -1379,6 +1433,8 @@ class Separator(QMainWindow):
         self.thumb_pool.clear()
         self.pending.clear()
         self.source = self.view_dir = None
+        self.current_event_label.setText("Eveniment curent: —")
+        self.current_event_label.setToolTip("")
         self.all_clips, self.cats, self.undo_stack = [], [], []
         self.sync_follow, self.sync_partial = set(), set()
         self.model.set_clips([])
@@ -1398,12 +1454,18 @@ class Separator(QMainWindow):
         self.free_label.setText('')
         self.dest_btn.setText('Destinatie: -')
 
+    def open_recent_session(self, index):
+        path = self.recent.itemData(index)
+        self.recent.setCurrentIndex(-1)
+        if path:
+            self.open_source(path)
+
     def fill_recent_box(self):
         self.recent.blockSignals(True)
         self.recent.clear()
-        for path in self.settings['recente']:
+        for path in self.settings.get('recente', []):
             self.recent.addItem(f'{Path(path).parent.name} / {Path(path).name}', path)
-        self.recent.setCurrentIndex(-1 if not self.source else 0)
+        self.recent.setCurrentIndex(-1)
         self.recent.blockSignals(False)
 
     def forget_current_session(self):
@@ -1486,9 +1548,88 @@ class Separator(QMainWindow):
         if folder:
             self.open_source(folder)
 
-    def open_source(self, folder):
-        if not folder or not Path(folder).is_dir():
+    def reconnect_session(self, old):
+        if old not in self.settings['proiecte']:
+            return self.statusBar().showMessage('Folderul nu este disponibil.', 5000)
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle('Folderul sesiunii nu este disponibil')
+        prompt.setText(f'Nu găsesc folderul:\n{old}')
+        prompt.setInformativeText('Dacă l-ai redenumit sau mutat, alege noua locație. Dacă discul este deconectat, poți reveni mai târziu.')
+        locate = prompt.addButton('Găsește folderul mutat…', QMessageBox.ButtonRole.AcceptRole)
+        later = prompt.addButton('Mai târziu', QMessageBox.ButtonRole.RejectRole)
+        prompt.setDefaultButton(later)
+        prompt.exec()
+        if prompt.clickedButton() != locate:
             return
+        parent = Path(old).parent
+        chosen = QFileDialog.getExistingDirectory(self, 'Alege noua locație a folderului',
+                                                  str(parent if parent.is_dir() else Path.home()))
+        if not chosen:
+            return
+        try:
+            self.relink_paths(old, str(Path(chosen).resolve()))
+        except (OSError, ValueError) as error:
+            return QMessageBox.warning(self, 'Reconectare sesiune', str(error))
+        self.open_source(str(Path(chosen).resolve()))
+
+    def relink_paths(self, old, new):
+        import copy
+        original = self.settings
+        settings = copy.deepcopy(original)
+        projects = settings['proiecte']
+        if not Path(new).is_dir() or old not in projects:
+            raise ValueError('Sesiunea sau folderul ales nu este disponibil.')
+        if any(k != old and Path(k).resolve() == Path(new).resolve() for k in projects):
+            raise ValueError('Folderul ales are deja o sesiune. Alege alt folder pentru a nu suprascrie setările.')
+        def rebase(value):
+            if not value:
+                return value
+            rel = Path(value).resolve()
+            base = Path(old).resolve()
+            return str(Path(new) / rel.relative_to(base)) if rel.is_relative_to(base) else value
+        project = projects.pop(old)
+        if project.get('destinatie'):
+            project['destinatie'] = rebase(project['destinatie'])
+        if 'scan_exclusions' in project:
+            project['scan_exclusions'] = [rebase(p) for p in project['scan_exclusions']]
+        projects[new] = project
+        settings['recente'] = list(dict.fromkeys(new if p == old else p for p in settings.get('recente', [])))
+        if settings.get('ultima_sursa') == old:
+            settings['ultima_sursa'] = new
+        journal = JOURNAL_FILE.read_text(encoding='utf-8') if JOURNAL_FILE.exists() else None
+        if journal is not None:
+            lines = []
+            for line in journal.splitlines(keepends=True):
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    lines.append(line)
+                    continue
+                if isinstance(entry, dict) and entry.get('sursa') == old:
+                    entry['sursa'] = new
+                    if 'perechi' in entry:
+                        entry['perechi'] = [[rebase(src), rebase(dst)] for src, dst in entry['perechi']]
+                    line = json.dumps(entry, ensure_ascii=False) + '\n'
+                lines.append(line)
+            pending = JOURNAL_FILE.with_suffix('.relink.tmp')
+            pending.write_text(''.join(lines), encoding='utf-8')
+            pending.replace(JOURNAL_FILE)
+        try:
+            save_json(SETTINGS_FILE, settings)
+        except OSError:
+            if journal is not None:
+                pending.write_text(journal, encoding='utf-8')
+                pending.replace(JOURNAL_FILE)
+            raise
+        self.settings = settings
+
+    def open_source(self, folder):
+        if self.moving:
+            return self.statusBar().showMessage("Așteaptă terminarea mutării.", 5000)
+        if not folder:
+            return
+        if not Path(folder).is_dir():
+            return self.reconnect_session(folder)
         if self.source != Path(folder):
             self.transfer_toggle.setChecked(False)
         self.source = Path(folder)
@@ -1503,15 +1644,17 @@ class Separator(QMainWindow):
             projects[str(self.source)] = project
         self.dest_root = Path(project['destinatie'])
         self.cats = project['categorii']
+        self.remember_destinations()
+        self.audio_follow.blockSignals(True)
+        self.audio_follow.setChecked(bool(project.get('event_audio_follow', False)) if 'event_tracks' in project
+                                     else bool(self.settings.get('audio_urmeaza', True)))
+        self.audio_follow.blockSignals(False)
         recents = [str(self.source)] + [p for p in self.settings.get('recente', []) if p != str(self.source)]
         self.settings['recente'] = recents[:12]
         self.settings['ultima_sursa'] = str(self.source)
-        self.recent.blockSignals(True)
-        self.recent.clear()
-        for path in self.settings['recente']:
-            p = Path(path)
-            self.recent.addItem(f'{p.parent.name} / {p.name}', path)
-        self.recent.blockSignals(False)
+        self.current_event_label.setText(f'Eveniment curent: {self.source.name}')
+        self.current_event_label.setToolTip(str(self.source))
+        self.fill_recent_box()
         self.load_undo_stack()
         self.save_settings()
         self.fill_lut_box(self.lut_box, self.project_lut_selection())
@@ -1520,12 +1663,127 @@ class Separator(QMainWindow):
     def project(self):
         return self.settings['proiecte'][str(self.source)]
 
+    def restore_xml_next_to_clips(self):
+        if self.moving:
+            return self.statusBar().showMessage('Așteaptă terminarea mutărilor.', 5000)
+        initial = self.dest_root / 'XML' if self.dest_root else Path.home()
+        source = QFileDialog.getExistingDirectory(self, 'Alege folderul XML de pe backup', str(initial))
+        if not source:
+            return
+        target = QFileDialog.getExistingDirectory(self, 'Alege folderul de lucru cu clipuri (SSD)')
+        if not target:
+            return
+        try:
+            source, target = Path(source).resolve(), Path(target).resolve()
+            if source == target or source.is_relative_to(target) or target.is_relative_to(source):
+                raise ValueError('Alege două foldere separate: XML de pe backup și clipuri de pe SSD.')
+            plan, skipped = xml_copy_plan(source, target)
+            if not plan:
+                return QMessageBox.information(self, 'XML lângă clipuri', f'Niciun XML de copiat. Omise: {skipped}.')
+            answer = QMessageBox.question(self, 'XML lângă clipuri',
+                f'Copiezi {len(plan)} XML-uri lângă clipurile din:\n{target}\n\n'
+                f'Omise (fără pereche, ambigue sau deja existente): {skipped}. Backupul rămâne intact.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            copied, errors = 0, []
+            for xml, destination in plan:
+                created = False
+                try:
+                    with xml.open('rb') as src, destination.open('xb') as dst:
+                        created = True
+                        shutil.copyfileobj(src, dst)
+                    copied += 1
+                except OSError as error:
+                    if created:
+                        try:
+                            destination.unlink()
+                        except OSError:
+                            pass
+                    errors.append(f'{xml.name}: {error}')
+            result = f'Copiate: {copied}. Omise: {skipped}. Erori: {len(errors)}.'
+            if errors:
+                QMessageBox.warning(self, 'XML lângă clipuri', result + '\n' + '\n'.join(errors[:10]))
+            else:
+                QMessageBox.information(self, 'XML lângă clipuri', result)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, 'XML lângă clipuri', str(error))
+
+    def collect_xml(self):
+        if self.moving or not self.source or not self.dest_root or not self.dest_root.is_dir():
+            return self.statusBar().showMessage('Deschide evenimentul și așteaptă terminarea mutărilor.', 5000)
+        root = self.dest_root.resolve()
+        dest = root / 'XML'
+        try:
+            if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                raise OSError(f'Destinație incompatibilă: {dest}')
+            files = list(project_xml(root, dest))
+            if any(path.stat().st_dev != root.stat().st_dev for path in files):
+                raise OSError('XML-urile trebuie să fie pe același disc cu destinația.')
+            if files:
+                answer = QMessageBox.question(self, 'Adună XML-urile',
+                    f'Muți {len(files)} fișiere XML în:\n{dest}\n\nMEDIAPRO.XML și directoarele DATABASE rămân la locul lor.',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel)
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+            dest.mkdir(exist_ok=True)
+            existing = next((c for c in self.cats if c['nume'].casefold() == 'xml'), None)
+            if existing is None:
+                self.cats.append({'nume': 'XML', 'culoare': COLORS[len(self.cats) % len(COLORS)]})
+            else:
+                existing['nume'] = 'XML'
+            self.remember_destinations()
+            self.save_settings()
+            self.rebuild_categories()
+            pairs, reserved = [], {name.name.casefold() for name in dest.iterdir()}
+            for path in files:
+                name, index = path.name, 2
+                while name.casefold() in reserved:
+                    name = f'{path.stem} ({index}){path.suffix}'
+                    index += 1
+                reserved.add(name.casefold())
+                pairs.append((str(path), str(dest / name)))
+            if pairs:
+                self.run_batch({'sursa': str(self.source), 'folder': 'XML', 'perechi': pairs,
+                                'clipuri': len(pairs), 'octeti': 0, 'no_copy': True}, 'XML')
+            else:
+                self.statusBar().showMessage('Folderul XML este pregătit. Nu sunt XML-uri noi de mutat.', 5000)
+        except OSError as error:
+            QMessageBox.warning(self, 'Adună XML-urile', str(error))
+
+    def reset_session(self):
+        if self.moving:
+            self.statusBar().showMessage('Așteaptă terminarea mutărilor înainte de resetare.', 5000)
+            return
+        if not self.source or not self.source.is_dir():
+            self.statusBar().showMessage('Deschide un folder disponibil pentru a începe.', 5000)
+            return
+        self.transfer_toggle.setChecked(False)
+        self.search.blockSignals(True)
+        self.kind_box.blockSignals(True)
+        try:
+            self.search.clear()
+            self.kind_box.setCurrentIndex(0)
+        finally:
+            self.search.blockSignals(False)
+            self.kind_box.blockSignals(False)
+        self.player.stop()
+        self.grid.clearSelection()
+        self.remember_destinations()
+        self.cats.clear()
+        self.project()["categorii"] = self.cats
+        self.show_folder(self.source)
+        self.save_settings()
+        self.statusBar().showMessage('Sesiune resetată. Adaugă etichete din Pregătire eveniment.', 5000)
+
     def event_setup(self):
         dialog = QDialog(self)
         dialog.setWindowTitle('Pregătire eveniment')
         layout = QVBoxLayout(dialog)
         profile = QComboBox()
-        profile.addItems(['Doar creează foldere', 'Sony + RØDE + F6'])
+        profile.addItems(['Scanează subfolderele · Sony + RØDE + F6', 'Doar creează foldere'])
         layout.addWidget(QLabel('Scanarea afișează fișierele în locul lor. Sortarea mută doar pe același disc.'))
         layout.addWidget(profile)
 
@@ -1548,7 +1806,10 @@ class Separator(QMainWindow):
         source, source_btn = folder_row('Scanează folderul')
         dest, dest_btn = folder_row('Folderul evenimentului')
         same = QCheckBox('Folosește folderul scanat și ca destinație')
-        same.setChecked(True)
+        if self.source and self.source.is_dir():
+            source.setText(str(self.source))
+            dest.setText(str(self.dest_root or self.source))
+        same.setChecked(not source.text() or source.text() == dest.text())
         layout.addWidget(same)
         tracks = QHBoxLayout()
         tracks.addWidget(QLabel('Piste F6:'))
@@ -1573,10 +1834,19 @@ class Separator(QMainWindow):
                 item = QListWidgetItem(name, cats)
                 item.setCheckState(Qt.CheckState.Checked)
         fill_categories()
+        if self.source and self.cats:
+            selected = {cat['nume'] for cat in self.cats}
+            listed = {cats.item(i).text() for i in range(cats.count())}
+            for name in sorted(selected - listed):
+                QListWidgetItem(name, cats)
+            for i in range(cats.count()):
+                item = cats.item(i)
+                item.setCheckState(Qt.CheckState.Checked if item.text() in selected else Qt.CheckState.Unchecked)
         template.currentTextChanged.connect(fill_categories)
 
         def sync():
-            scanning = profile.currentIndex() == 1
+            scanning = profile.currentIndex() == 0
+            run.setText("Scanează și pregătește" if scanning else "Creează doar folderele")
             source_btn.setEnabled(scanning)
             same.setEnabled(scanning)
             for box in track_boxes.values():
@@ -1587,7 +1857,6 @@ class Separator(QMainWindow):
         same.toggled.connect(sync)
         profile.currentIndexChanged.connect(sync)
         source.textChanged.connect(sync)
-        sync()
         actions = QHBoxLayout()
         cancel = QPushButton('Renunță')
         run = QPushButton('Pregătește')
@@ -1612,7 +1881,7 @@ class Separator(QMainWindow):
                     if path.is_symlink() or (path.exists() and not path.is_dir()):
                         raise ValueError(f'Destinație incompatibilă: {path}')
                 files = []
-                scanning = profile.currentIndex() == 1
+                scanning = profile.currentIndex() == 0
                 if not scanning and not names:
                     raise ValueError('Bifează cel puțin un folder.')
                 if scanning:
@@ -1621,7 +1890,10 @@ class Separator(QMainWindow):
                     if self.moving:
                         raise ValueError('Așteaptă terminarea mutărilor curente.')
                     root = Path(source.text()).resolve(strict=True)
-                    files = scan_event_media(root, {n for n, box in track_boxes.items() if box.isChecked()})
+                    saved = self.settings['proiecte'].get(str(root), {})
+                    exclusions = self.destination_paths(saved) | {str((target / name).resolve()) for name in names}
+                    files = scan_event_media(root, {n for n, box in track_boxes.items() if box.isChecked()},
+                                             {Path(path) for path in exclusions})
                     if not files:
                         raise ValueError('Nu am găsit clipuri Sony, audio RØDE sau piste F6 bifate.')
                 for name in names:
@@ -1632,25 +1904,27 @@ class Separator(QMainWindow):
                     project.update({
                         'destinatie': str(target),
                         'event_tracks': tracks_selected,
+                        'scan_exclusions': sorted(exclusions),
                         'categorii': [{'nume': name, 'culoare': COLORS[i % len(COLORS)]}
                                       for i, name in enumerate(names)],
                     })
                     self.transfer_toggle.setChecked(False)
                     self.open_source(str(root))
                 elif self.source:
+                    self.remember_destinations()
                     self.dest_root = target
                     self.project()['destinatie'] = str(target)
-                    known = {cat['nume'].casefold() for cat in self.cats}
-                    for name in names:
-                        if name.casefold() not in known:
-                            self.cats.append({'nume': name, 'culoare': COLORS[len(self.cats) % len(COLORS)]})
-                            known.add(name.casefold())
+                    self.cats = [{'nume': name, 'culoare': COLORS[i % len(COLORS)]}
+                                 for i, name in enumerate(names)]
+                    self.project()['categorii'] = self.cats
+                    self.remember_destinations()
                     self.save_settings()
                     self.rebuild_categories()
                 self.statusBar().showMessage(f'{len(names)} foldere pregătite în {target}', 8000)
                 dialog.accept()
             except (OSError, ValueError) as error:
                 QMessageBox.warning(dialog, 'Pregătire eveniment', str(error))
+        sync()
         run.clicked.connect(prepare)
         dialog.resize(680, 490)
         dialog.exec()
@@ -1660,19 +1934,45 @@ class Separator(QMainWindow):
             return
         folder = QFileDialog.getExistingDirectory(self, 'Unde se creeaza folderele categoriilor', str(self.dest_root))
         if folder:
+            self.remember_destinations()
             self.dest_root = Path(folder)
             self.project()['destinatie'] = folder
+            self.remember_destinations()
             self.save_settings()
             self.rebuild_categories()
 
     def cat_dir(self, cat):
         return self.dest_root / cat['nume']
 
+    @staticmethod
+    def destination_paths(project):
+        paths = set(project.get('scan_exclusions', []))
+        dest = project.get('destinatie')
+        if dest:
+            paths.update(str((Path(dest) / cat['nume']).resolve()) for cat in project.get('categorii', []))
+        return paths
+
+    def remember_destinations(self):
+        if self.source and self.dest_root:
+            project = self.project()
+            project['scan_exclusions'] = sorted(self.destination_paths(project))
+
     def clips_in_view(self, folder):
         if folder == self.source and 'event_tracks' in self.project():
             return event_clips(folder, set(self.project()['event_tracks']),
-                               {self.cat_dir(cat) for cat in self.cats})
+                               {Path(path) for path in self.destination_paths(self.project())})
         return list_clips(folder)
+
+    def refresh_folder(self):
+        if self.moving:
+            return self.statusBar().showMessage('Așteaptă terminarea mutării înainte de reîmprospătare.', 5000)
+        if not self.view_dir or not self.view_dir.is_dir():
+            return self.statusBar().showMessage('Folderul nu este disponibil.', 5000)
+        selected = {c.path for c in self.selected_clips()}
+        self.show_folder(self.view_dir)
+        if selected:
+            self.restore_selection(selected)
+        self.statusBar().showMessage('Lista și numărul de clipuri au fost actualizate.', 4000)
 
     def show_folder(self, folder):
         if not folder:
@@ -1803,6 +2103,11 @@ class Separator(QMainWindow):
         self.show_folder(folder)
 
     def category_clicked(self, index):
+        if index < len(self.cats) and self.cats[index]["nume"] == "XML":
+            path = self.cat_dir(self.cats[index])
+            if path.is_dir():
+                open_path(path)
+            return
         if self.transfers_enabled:
             self.move_selection(index)
         elif index < len(self.cats):
@@ -1820,9 +2125,11 @@ class Separator(QMainWindow):
             hl.setContentsMargins(0, 0, 0, 0)
             hl.setSpacing(3)
             b = FolderButton(self.grid)
-            b.transfer_mode = self.transfers_enabled
+            b.transfer_mode = self.transfers_enabled and cat["nume"] != "XML"
             key = str((i + 1) % 10) if i < 10 else ' '
             n = count_media(self.cat_dir(cat))
+            if cat["nume"] == "XML" and self.cat_dir(cat).is_dir():
+                n += sum(p.is_file() and p.suffix.casefold() == ".xml" for p in self.cat_dir(cat).iterdir())
             exists = self.cat_dir(cat).is_dir()
             b.setText(f'{key}   {cat["nume"]}' + (f'   ({n})' if n else '' if exists else '   (nou)'))
             color = QColor(cat.get('culoare', COLORS[0]))
@@ -1835,9 +2142,11 @@ class Separator(QMainWindow):
             b.setStyleSheet(f'QPushButton {{text-align:left; padding:10px 36px 10px 12px; font-size:14px; font-weight:bold;'
                             f' color:{foreground}; background:{background}; border:{border}; border-left:6px solid {color.name()};}}'
                             f' QPushButton:hover, QPushButton:pressed {{background:{hover};}}')
-            b.setAcceptDrops(self.transfers_enabled)
+            b.setAcceptDrops(b.transfer_mode)
             b.setToolTip((f'Muta selectia in {self.cat_dir(cat)}' if self.transfers_enabled else f'Vezi {self.cat_dir(cat)} · mutari blocate')
                          + '\nClick dreapta: optiuni folder')
+            if cat['nume'] == 'XML':
+                b.setToolTip(ui('Deschide folderul XML în Finder.'))
             b.clicked.connect(lambda _=False, c=i: self.category_clicked(c))
             b.dropped.connect(lambda c=i: self.move_selection(c))
             b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1982,6 +2291,8 @@ class Separator(QMainWindow):
         return [self.model.clips[r] for r in rows if r < len(self.model.clips)]
 
     def move_selection(self, index):
+        if 0 <= index < len(self.cats) and self.cats[index]["nume"] == "XML":
+            return self.statusBar().showMessage("Folosește Adună XML-urile; clipurile nu se mută în XML.", 5000)
         if not self.transfers_enabled:
             self.statusBar().showMessage('Mutare blocata. Activeaza Sortare deasupra folderelor pentru a muta clipuri.', 5000)
             return
@@ -1996,6 +2307,15 @@ class Separator(QMainWindow):
         if self.view_dir == dest:
             return
         extra = self.linked_audio(clips)[0] if self.audio_follow.isChecked() else []
+        if extra and 'event_tracks' in self.project():
+            prompt = QMessageBox(self)
+            prompt.setWindowTitle('Audio asociat după oră')
+            prompt.setText(f'{len(extra)} fișiere audio vor însoți selecția spre {cat["nume"]}. Verifică lista înainte de mutare.')
+            prompt.setDetailedText('\n'.join(str(c.path) for c in extra))
+            prompt.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+            prompt.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if prompt.exec() != QMessageBox.StandardButton.Yes:
+                return
         clips = clips + extra
         try:
             dest.mkdir(parents=True, exist_ok=True)
@@ -2020,15 +2340,14 @@ class Separator(QMainWindow):
                                                'Alege o destinație pe același disc. Profilul nu copiază între discuri.')
             except OSError as exc:
                 return QMessageBox.warning(self, 'Mutare', str(exc))
+        self.remember_destinations()
+        self.save_settings()
         self.drop_from_grid(clips)
         size = sum(c.size for c in clips)
         cross = os.stat(clips[0].path).st_dev != os.stat(dest).st_dev
         batch = {'id': self.next_batch, 'ora': time.strftime('%Y-%m-%d %H:%M:%S'), 'folder': cat['nume'],
                  'sursa': str(self.source), 'perechi': pairs, 'clipuri': len(clips), 'octeti': size}
         self.run_batch(batch, f'{len(clips)} clipuri > {cat["nume"]}')
-        self.undo_stack.append(batch)
-        self.journal(batch, 'mutare')
-        self.undo_btn.setEnabled(True)
         self.statusBar().showMessage(f'{len(clips) - len(extra)} clipuri ({human_size(size)}) > {cat["nume"]}'
                                      + (f'  ·  +{len(extra)} audio sincron' if extra else '')
                                      + ('  ·  copiere pe alt disc, poate dura' if cross else ''), 6000)
@@ -2059,6 +2378,8 @@ class Separator(QMainWindow):
 
     def trash_selection(self):
         """Muta selectia in Cosul macOS; se poate anula cu Cmd+Z cat timp Cosul nu e golit."""
+        if self.moving:
+            return self.statusBar().showMessage("Așteaptă terminarea mutării.", 5000)
         clips = self.selected_clips()
         if not clips:
             return self.statusBar().showMessage('Selecteaza intai clipurile de sters', 4000)
@@ -2111,14 +2432,30 @@ class Separator(QMainWindow):
         self.batches[bid] = batch
         self.moving += 1
         self.move_pool.start(MoveJob(bid, batch['perechi'], label, self.signals,
-                                    allow_copy='event_tracks' not in self.project()))
+                                    allow_copy=not batch.get('no_copy') and 'event_tracks' not in self.project()))
 
     def move_progress(self, bid, done, total, label):
         self.statusBar().showMessage(f'Mut: {label}  {done}/{total}')
 
-    def move_done(self, bid, errors):
+    def move_done(self, bid, errors, moved):
         self.moving -= 1
         batch = self.batches.pop(bid, {})
+        original = batch.get('undo_original')
+        if original and moved:
+            self.undo_stack.pop()
+            self.journal(original, 'anulare')
+            restored = {(dst, src) for src, dst in moved}
+            remaining = [pair for pair in original['perechi'] if tuple(pair) not in restored]
+            if remaining:
+                retry = {**original, 'perechi': remaining}
+                self.undo_stack.append(retry)
+                self.journal(retry, 'mutare')
+        elif not original and moved:
+            completed = {**batch, 'perechi': moved}
+            self.journal(completed, 'mutare')
+            if completed['sursa'] == str(self.source):
+                self.undo_stack.append(completed)
+        self.undo_btn.setEnabled(bool(self.undo_stack))
         if errors:
             QMessageBox.warning(self, 'Unele fisiere nu s-au mutat', '\n'.join(errors[:20]))
             self.journal({'erori': errors, 'folder': batch.get('folder')}, 'erori')
@@ -2130,19 +2467,21 @@ class Separator(QMainWindow):
             self.rebuild_categories()
         if not self.moving:
             self.statusBar().showMessage(f'Mutare terminata: {batch.get("folder", "")}', 4000)
-            if self.view_dir == self.source and not self.all_clips and not self.search.text():
+            if not errors and not original and moved and batch.get('folder') != 'XML' and self.view_dir == self.source and not self.all_clips:
                 self.finished_report()
 
     def undo(self):
+        if self.moving:
+            return self.statusBar().showMessage('Așteaptă terminarea mutării înainte de anulare.', 5000)
         if not self.undo_stack:
             return self.statusBar().showMessage('Nimic de anulat', 3000)
-        batch = self.undo_stack.pop()
-        back = [(dst, src) for src, dst in reversed(batch['perechi'])]
-        self.journal(batch, 'anulare')
-        self.undo_btn.setEnabled(bool(self.undo_stack))
-        self.run_batch({'perechi': back, 'folder': f'anulare {batch["folder"]}', 'reselect': [src for _, src in back]},
+        batch = self.undo_stack[-1]
+        back = [(dst, src) for src, dst in reversed(batch['perechi']) if os.path.exists(dst)]
+        if not back:
+            return self.statusBar().showMessage('Fișierele pentru anulare nu mai sunt disponibile.', 5000)
+        self.run_batch({'undo_original': batch, 'no_copy': batch.get('no_copy', False), 'perechi': back, 'folder': f'anulare {batch["folder"]}', 'reselect': [src for _, src in back]},
                        f'inapoi din {batch["folder"]}')
-        self.statusBar().showMessage(f'Anulat: {batch["clipuri"]} clipuri inapoi din {batch["folder"]}', 5000)
+        self.statusBar().showMessage(f'Anulare în curs: {batch["clipuri"]} clipuri inapoi din {batch["folder"]}', 5000)
 
     def journal(self, batch, kind):
         with JOURNAL_FILE.open('a', encoding='utf-8') as f:
@@ -2166,19 +2505,36 @@ class Separator(QMainWindow):
                 stack.append(entry)
             elif entry.get('tip') == 'anulare' and stack:
                 stack.pop()
-        self.undo_stack = [b for b in stack if all(os.path.exists(d) for _, d in b['perechi'])][-50:]
+        self.undo_stack = [b for b in stack if b['perechi'] and any(os.path.exists(d) for _, d in b['perechi'])][-50:]
         self.undo_btn.setEnabled(bool(self.undo_stack))
 
     def finished_report(self):
-        lines = [f'{c["nume"]}: {count_media(self.cat_dir(c))} clipuri' for c in self.cats if count_media(self.cat_dir(c))]
+        if not self.source or not self.source.is_dir() or self.moving or self.clips_in_view(self.source):
+            return
+        source, destination = self.source, self.dest_root
+        lines = [f'{c["nume"]}: {n} clipuri' for c in self.cats if (n := count_media(self.cat_dir(c)))]
         box = QMessageBox(self)
-        box.setWindowTitle('Gata')
-        box.setText(f'Toate clipurile din {self.source.name} sunt sortate.\n\n' + '\n'.join(lines))
-        reveal = box.addButton(ui('Deschide destinatia in Finder'), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton('Inchide', QMessageBox.ButtonRole.RejectRole)
-        box.buttonClicked.connect(lambda button: self.open_in_finder(self.dest_root) if button is reveal else None)
+        box.setWindowTitle('Sortare terminată')
+        box.setText('Nu mai sunt fișiere nesortate în această sesiune. Închizi sesiunea?')
+        if lines:
+            box.setInformativeText('\n'.join(lines))
+        finish = box.addButton('Încheie sesiunea', QMessageBox.ButtonRole.AcceptRole)
+        stay = box.addButton('Rămâi în sesiune', QMessageBox.ButtonRole.RejectRole)
+        reveal = box.addButton(ui('Vezi destinația în Finder'), QMessageBox.ButtonRole.ActionRole)
+        box.setDefaultButton(stay)
+        box.setEscapeButton(stay)
+
+        def handle(button):
+            if self.source != source:
+                return
+            if button is finish and source.is_dir() and not self.clips_in_view(source):
+                self.close_session()
+            elif button is reveal and destination and destination.is_dir():
+                open_path(destination)
+
+        box.buttonClicked.connect(handle)
         self.report_box = box
-        box.open()  # fara bucla de evenimente separata: mutarile si miniaturile continua
+        box.open()
 
     # ---------- miniaturi
 
@@ -2556,6 +2912,14 @@ class Separator(QMainWindow):
             (partial if any(overlap(sound, o) > 0 for o in others) else follow).append(sound)
         return follow, partial
 
+    def audio_follow_changed(self, enabled):
+        if self.source and 'event_tracks' in self.project():
+            self.project()['event_audio_follow'] = enabled
+        else:
+            self.settings['audio_urmeaza'] = enabled
+        self.save_settings()
+        self.selection_changed()
+
     def selection_changed(self, *_):
         clips = self.selected_clips()
         follow, partial = self.linked_audio(clips) if self.audio_follow.isChecked() else ([], [])
@@ -2772,7 +3136,7 @@ class Separator(QMainWindow):
     def save_settings(self):
         self.settings.update({'marime': self.thumb_w, 'sortare': self.sort_box.currentIndex(), 'pauza_grup': self.gap.value(),
                               'fara_sunet': self.mute.isChecked(), 'limita_scurte': self.short_limit.value(),
-                              'tip': self.kind_box.currentIndex(), 'audio_urmeaza': self.audio_follow.isChecked(), 'autoredare': self.autoplay.isChecked()})
+                              'tip': self.kind_box.currentIndex(), 'autoredare': self.autoplay.isChecked()})
         save_json(SETTINGS_FILE, self.settings)
 
     def closeEvent(self, event):

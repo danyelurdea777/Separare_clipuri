@@ -2,12 +2,15 @@
 
 Muti clipurile transcodate in foldere pe categorii (Biserica, Restaurant, Acasa...), direct din miniaturi, ca in Adobe Bridge. Apoi folderele intra la sync.
 
-## Pornire rapida
+## Pregătirea unui eveniment
 
-1. **Deschide folder clipuri** (Cmd+O) sau trage folderul din Finder peste fereastra. Ex: `Video Botez/Prores`.
-2. Destinatia implicita este folderul parinte (`Video Botez`), deci categoriile apar langa `Prores`. O schimbi din butonul **Destinatie**.
-3. Prima data se citesc durata si ora filmarii (cateva secunde), apoi miniaturile se genereaza in fundal.
-4. Selectezi clipurile, apoi apesi tasta folderului (1, 2, 3...) sau click pe folder. Clipurile dispar din grila si selectia trece pe urmatorul clip.
+1. Apasă **Pregătire eveniment…** și alege folderul general de scanat. Dacă ai deja o sesiune deschisă, calea este completată.
+2. Lasă **Scanează subfolderele · Sony + RØDE + F6** pentru un eveniment cu mai multe carduri. Alege destinația categoriilor: același folder sau un alt folder de pe același disc.
+3. Alege șablonul și bifează doar categoriile utile. **Scanează și pregătește** deschide lista **Nesortate** și creează folderele bifate. Pentru foldere goale fără scanare, alege **Doar creează foldere**.
+4. Scanarea Sony caută video în `M4ROOT/CLIP`, audio în folderele RØDE și WAV/BWF cu pistele F6 bifate (implicit **Tr1, Tr2, Tr6**). Mixul TrL_R, proxy-urile din SUB și folderele de sortare cunoscute sunt omise. Fișierele apar direct din locația lor; scanarea nu copiază și nu mută nimic.
+5. Pentru un singur folder plat, folosește **Deschide folder clipuri** (Cmd+O) sau trage-l din Finder. Într-o sesiune fără profil, se citesc doar fișierele aflate direct în acel folder; destinația inițială este, de regulă, folderul părinte.
+
+**Eveniment curent** arată ce ai deschis. **Sesiuni recente** schimbă sau redeschide sesiunea; nu trebuie să alegi din nou folderul după pregătire.
 
 ## Selectie
 
@@ -28,31 +31,28 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 
 ## Previzualizare (dreapta)
 
-- **Spatiu** reda / pauza, click pe imagine la fel.
+- **▶ Redă / ⏸ Pauză**, **Spațiu** sau click pe imagine.
 - **J / L** inapoi / inainte 5 secunde, **Q** partea cu sunet, **M** sunet pornit / oprit, viteze 1x, 2x, 4x.
 - **Enter** sau dublu click deschide clipul in IINA; **R** il arata in Finder.
 - "Reda automat clipul selectat" porneste redarea la fiecare selectie (ProRes 4K poate fi greu pe Mac Intel; implicit e oprit).
 
-## Folderele (stanga)
+## Răsfoire, sortare și foldere
 
-- Primele 10 foldere au tastele **1-9** si **0**. Restul merg prin click, tragere sau click dreapta pe clip > Muta in.
-- Poti trage clipurile din grila peste un buton de folder.
-- **+ Eticheta**: adauga numele in lista; folderul se creeaza la prima mutare.
-- **+ Folder nou** (Cmd+N): creeaza imediat folderul pe disc.
-- Click dreapta pe clipuri > **Folder nou si muta aici**: creezi folderul si muti selectia dintr-un pas.
-- Click dreapta pe un folder: vezi continutul, deschide in Finder, redenumeste (si pe disc), culoare, ordine, scoate din lista (folderul ramane pe disc).
-- **Vezi**: arata ce ai mutat deja acolo. De acolo poti muta mai departe in alt folder sau "Inapoi in nesortate". **Inapoi la nesortate** revine la sursa.
-- Numarul dintre paranteze = cate clipuri sunt deja in folder; "(nou)" = folderul nu exista inca pe disc.
+- **Răsfoire** este modul de pornire. Etichetele deschise, cu folder albastru, afișează conținutul în aplicație. Mutarea prin click, taste sau tragere este blocată.
+- **Sortare** se activează din comutatorul deasupra folderelor. Etichetele colorate, cu săgeată spre stânga, mută selecția. Folosește click, tastele **1–9 și 0** pentru primele zece categorii sau trage selecția peste folder.
+- **Finder** deschide folderul de pe disc fără să mute clipuri sau să schimbe modul. **Vezi conținutul**, din meniul de click dreapta al categoriei, revine în Răsfoire. **Înapoi la nesortate** afișează sursa.
+- **+ Etichetă** adaugă numele în listă; folderul se creează la prima mutare. **+ Folder nou** îl creează imediat. Click dreapta pe categorie permite schimbarea culorii, ordinii, redenumirea sau scoaterea din listă; scoaterea etichetei nu șterge folderul.
+- Numărul din paranteze arată câte fișiere sunt în categorie; **(nou)** înseamnă că folderul nu există încă.
 
 ## Audio (recordere, lavaliere)
 
 - Fisierele audio (WAV, BWF, MP3, M4A, FLAC, AIFF) apar in grila langa clipuri, pe carduri mov, cu forma de unda in loc de imagine. Plimbi mouse-ul peste ele si vezi pozitia.
 - Ora inregistrarii se citeste din WAV-urile de la Zoom, Tascam, Sound Devices (BWF). La alte fisiere se deduce din ora la care s-a terminat inregistrarea.
 - Audio-ul intra in grupul clipurilor filmate in acelasi timp, deci **G** il selecteaza impreuna cu ele.
-- **Audio sincron merge cu clipurile** (bifa din stanga, pornita implicit): cand selectezi clipuri, inregistrarile audio facute in acelasi timp primesc marcajul portocaliu **SYNC** si se muta automat cu ele, in acelasi folder.
+- **Audio sincron merge cu clipurile** este inițial debifată în profilul Sony + RØDE + F6. Când o activezi, clipurile asociate după oră primesc marcajul **SYNC**, iar profilul îți arată lista și cere confirmare înainte de mutare.
 - **SYNC partial** (chenar punctat): inregistrarea acopera si alte clipuri inca nesortate (de ex. recorderul a mers toata slujba). Ramane pe loc si pleaca odata cu ultimul clip cu care se suprapune. Daca vrei altfel, o selectezi si o muti manual.
 - Ceasurile camerei si recorderului trebuie sa fie sincronizate (toleranta: 5 secunde).
-- Lista de sus **Video si audio / Doar video / Doar audio** arata doar ce te intereseaza; audio-ul sincron se muta oricum cu clipurile.
+- Lista de sus **Video si audio / Doar video / Doar audio** arata doar ce te intereseaza; filtrul schimbă afișarea, nu bifa pentru mutarea audio.
 
 ## Sunet
 
@@ -61,15 +61,12 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - Sub previzualizare e **forma de unda** a clipului curent, cu pozitia redarii; click sau tragi pe ea ca sa sari in clip.
 - **Q** sau **Sunet (Q)** reda clipul de la partea cea mai puternica a sunetului: auzi repede daca e discurs, interviu sau muzica.
 
-## LUT (S-Log3, C-Log, V-Log, D-Log)
+## LUT pentru previzualizare
 
-- Din lista **LUT** (dreapta, sub previzualizare) alegi un fisier `.cube`, de exemplu `1_SGamut3CineSLog3_To_LC-709` din Premiere. Miniaturile, derularea din miniatura si previzualizarea video se vad corectate; fisierele raman neatinse.
-- **Automat dupa camera**: aplicatia citeste din fisierele Sony gamma inregistrata (ex: `s-log3-cine` sau `rec709`) si modelul camerei. Clipurile S-Log3 primesc singure LUT-ul Sony, iar cele rec709 raman fara LUT, chiar daca ai schimbat profilul in timpul filmarii. Miniatura arata eticheta **SLOG3**.
-- Dupa transcodare (ProRes) informatia se pierde, asa ca aplicatia o ia din originale: deschide o data folderul cu fisierele originale de la camera, iar ProRes-ul cu acelasi nume si aceeasi durata mosteneste gamma lor.
-- LUT-ul proiectului (lista **LUT**) se aplica doar clipurilor cu gamma necunoscuta sau log, niciodata celor rec709. Se tine minte pe proiect, iar ultimele LUT-uri folosite raman in lista.
-- **Pe camera**: reguli dupa inceputul numelui, modelul camerei sau gamma (ex: `DJI` > `DJI Mini 4 Pro D-Log M to Rec.709`, `ZV-E1` > LUT-ul Sony) si, dedesubt, LUT-ul automat pentru fiecare gamma intalnita, valabil in toate proiectele.
-- Miniaturile cu LUT se pastreaza separat: cand schimbi LUT-ul, cele vechi raman si revii instant la ele.
-- Previzualizarea cu LUT trece prin procesor (~30 de cadre pe secunda la 4K pe Mac Intel); fara LUT ramane pe placa video.
+- **Implicit** folosește LUT-ul salvat, cu regulile **Pe cameră**. Clipurile cu profil cunoscut non-log sunt lăsate fără LUT implicit. Pentru material transcodificat, aplicația poate deduce gamma din originale după nume și durată.
+- **Fără LUT** dezactivează complet efectul pentru proiect. Alegerea explicită a unui LUT îl aplică previzualizării și miniaturilor video.
+- **Încarcă alt LUT (.cube)** permite alegerea fișierului de oriunde și îl copiază în biblioteca locală `data/luts/biblioteca/`. **Folder LUT** deschide biblioteca; **Setează implicit** păstrează LUT-ul pentru proiectele viitoare.
+- LUT-ul nu modifică fișierele video. Miniaturile colorizate se păstrează separat în cache.
 
 ## Teste de expunere si clipuri pornite din greseala
 
@@ -85,14 +82,19 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - "Salveaza lista curenta ca sablon" pastreaza lista pentru urmatoarele proiecte.
 - La un proiect nou: daca in destinatie exista deja foldere cu clipuri, ele devin lista; altfel se foloseste ultimul sablon ales.
 
-## Siguranta
+## Mutare, anulare și reluarea sesiunii
 
-- Mutarea pe acelasi disc este o simpla redenumire: instantanee, fara copiere.
-- Pe alt disc: copiere, verificare marime, apoi stergerea originalului, in fundal.
-- Nimic nu se sterge si nimic nu se suprascrie: la nume identic se adauga " (2)".
-- Fisierele insotitoare cu acelasi nume (.XML Sony, .LRF/.SRT DJI, .THM) se muta impreuna cu clipul, la fel si audio-ul marcat SYNC.
-- **Cmd+Z** / "Anuleaza ultima mutare" muta inapoi ultimul lot. Merge de mai multe ori si chiar dupa redeschiderea aplicatiei (jurnalul e in `data/jurnal.jsonl`).
-- Cand sursa se goleste, aplicatia arata un rezumat pe foldere.
+- În profilul Sony + RØDE + F6, mutările între discuri sunt blocate. Pe același disc aplicația mută fișierele fără să le copieze. Modul obișnuit poate copia între discuri, verifica dimensiunea, apoi elimina sursa.
+- Numele identice primesc un sufix. Fișierele însoțitoare cu același nume de bază se mută împreună cu clipul.
+- **Cmd+Z / Anulează ultima mutare** folosește jurnalul `data/jurnal.jsonl`. Dacă un lot reușește doar parțial, fișierele mutate cu succes rămân disponibile pentru anulare și după restart.
+- Poți opri sortarea și reveni mâine. Redeschide sesiunea; lista nesortată este citită din nou. După mutări manuale în Finder, apasă **↻ Reîmprospătează** ca să recitești folderul afișat și contoarele fără să pierzi etichetele sau filtrele.
+- **Resetare sesiune** revine la Nesortate, golește căutarea, filtrul audio/video și etichetele, apoi trece în Răsfoire. Nu mută sau șterge fișiere. Destinațiile memorate rămân excluse din scanare. Pentru reluare, folosește **Sesiuni recente**, nu resetarea.
+- După ultima mutare, dacă nu mai sunt fișiere eligibile în sursă, poți **Încheia sesiunea**, **Rămâne în sesiune** sau deschide destinația în Finder. Sesiunea încheiată rămâne disponibilă în **Sesiuni recente**.
+
+## Fișiere XML: arhivă și SSD
+
+- **Adună XML-urile** caută în destinația evenimentului și subfolderele ei. Creează folderul și eticheta **XML** și, după confirmare, mută fișierele XML în acel folder. Numele duplicate primesc sufix, iar mutarea se poate anula cu **Cmd+Z**. `MEDIAPRO.XML` și directoarele `DATABASE` nu sunt atinse. Eticheta XML deschide folderul în Finder, inclusiv în Sortare.
+- **Foldere → Copiază XML lângă clipuri…**: alege folderul XML de pe backup și folderul de lucru de pe SSD. Aplicația caută și în subfoldere, potrivește numele (inclusiv `URDEA1001M01.XML` cu `URDEA1001.MP4`) și copiază XML-ul lângă clip. Omite potrivirile ambigue, fișierele fără pereche și destinațiile existente. Backupul rămâne intact.
 
 ## Meniul de sus si sesiunile
 
@@ -104,7 +106,11 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 - **Fisier > Goleste miniaturile salvate** elibereaza spatiul ocupat de miniaturi; se refac singure cand deschizi un folder.
 - **Cmd+1 / 2 / 3**: video si audio / doar video / doar audio.
 
+## Sesiune cu folder redenumit sau mutat
+
+Dacă aplicația nu mai găsește folderul la pornire sau când deschizi sesiunea din **Sesiuni recente**, apasă **Găsește folderul mutat…** și alege noua locație a sursei. Rămân profilul, etichetele și jurnalul de anulare. Căile din interiorul folderului mutat se actualizează; destinațiile externe rămân la adresa lor. Dacă discul este doar deconectat, apasă **Mai târziu**. Reconectarea nu mută fișiere.
+
 ## Alte scurtaturi
 
 - **Cmd+F** cautare in nume, **Cmd+=** / **Cmd+-** miniaturi mai mari / mai mici, **F1** acest ajutor.
-- Clipurile se pot trage si direct in DaVinci Resolve (ca o copiere de referinta, nu se muta).
+- În modul Sortare, clipurile se pot trage și direct în DaVinci Resolve (ca o copiere de referinta, nu se muta).
