@@ -41,6 +41,7 @@ else:
 DATA = Path(os.environ.get('SEPARARE_DATA', _default_data))  # alt folder doar pentru teste
 THUMBS = DATA / 'thumbs'
 LUT_DIR = DATA / 'luts'
+LUT_LIBRARY = LUT_DIR / 'biblioteca'
 VERSION = (APP_DIR / 'VERSIUNE').read_text().strip() if (APP_DIR / 'VERSIUNE').exists() else ''
 SETTINGS_FILE = DATA / 'setari.json'
 META_FILE = DATA / 'metadate.json'
@@ -105,6 +106,28 @@ def open_path(path, reveal=False):
 
 
 FFMPEG, FFPROBE = find_tool('ffmpeg'), find_tool('ffprobe')
+
+
+def playback_icon(playing=False):
+    """High-contrast transport icon, independent of system fonts and theme."""
+    pix = QPixmap(28, 28)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor('#f3f6fa'))
+    if playing:
+        painter.drawRoundedRect(7, 5, 5, 18, 1, 1)
+        painter.drawRoundedRect(16, 5, 5, 18, 1, 1)
+    else:
+        path = QPainterPath()
+        path.moveTo(8, 4)
+        path.lineTo(23, 14)
+        path.lineTo(8, 24)
+        path.closeSubpath()
+        painter.drawPath(path)
+    painter.end()
+    return QIcon(pix)
 
 
 def human_size(n):
@@ -251,6 +274,46 @@ def name_prefix(name):
 def clip_key(name, size, mtime):
     # cheia nu depinde de folder, ca miniaturile sa ramana valabile dupa mutare
     return hashlib.md5(f'{name}|{size}|{int(mtime)}'.encode()).hexdigest()[:16]
+
+
+def scan_event_media(root, tracks, exclusions=()):
+    """Select media from card layouts, never from arbitrary event categories."""
+    files = []
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.')
+                         and d.casefold() not in ('trash', 'false take', 'f6_settings')
+                         and not d.casefold().startswith('import separare ')
+                         and Path(folder, d) not in exclusions)
+        base = Path(folder)
+        parts = [p.casefold() for p in base.parts]
+        sony = parts[-2:] == ['m4root', 'clip']
+        rode = any(re.fullmatch(r'r[oø]de(?:[ _-].*|central)?', p) for p in parts)
+        f6 = any(p.endswith('.take') for p in parts) or any(p in ('f6_sd', 'f6') for p in parts)
+        for name in sorted(names):
+            path = base / name
+            if name.startswith('.') or path.is_symlink() or not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if sony and suffix in EXT:
+                files.append(path)
+            elif f6 and suffix in ('.wav', '.bwf'):
+                match = re.search(r'[_-]tr(\d+)$', path.stem, re.IGNORECASE)
+                if match and int(match.group(1)) in tracks:
+                    files.append(path)
+            elif rode and suffix in AUDIO_EXT:
+                files.append(path)
+    return files
+
+
+def event_clips(root, tracks, exclusions=()):
+    clips = []
+    for path in scan_event_media(root, tracks, exclusions):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        clips.append(Clip(path, st.st_size, st.st_mtime, clip_key(path.name, st.st_size, st.st_mtime)))
+    return clips
 
 
 def list_clips(folder):
@@ -490,9 +553,10 @@ def rename_retry(src, dst):
 
 class MoveJob(QRunnable):
     """Muta o lista de fisiere; pe acelasi disc e redenumire instantanee, intre discuri copiere + stergere."""
-    def __init__(self, batch_id, pairs, label, signals):
+    def __init__(self, batch_id, pairs, label, signals, allow_copy=True):
         super().__init__()
         self.batch_id, self.pairs, self.label, self.signals = batch_id, pairs, label, signals
+        self.allow_copy = allow_copy
 
     def run(self):
         errors = []
@@ -506,6 +570,8 @@ class MoveJob(QRunnable):
                 except OSError as exc:
                     if exc.errno != errno.EXDEV and getattr(exc, 'winerror', None) != 17:  # alt disc
                         raise
+                    if not self.allow_copy:
+                        raise OSError('Mutarea între discuri este blocată pentru acest profil.') from exc
                     shutil.copy2(src, dst + '.partial')
                     if os.path.getsize(dst + '.partial') != os.path.getsize(src):
                         raise OSError('copia are alta marime decat originalul')
@@ -761,6 +827,35 @@ class FolderButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(42)
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x, y = self.width() - 20, self.height() // 2
+        if getattr(self, 'transfer_mode', False):
+            # The files are to the right of the sidebar: point left into the destination label.
+            pen = QPen(QColor('#ffffff'), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.drawLine(x + 8, y, x - 8, y)
+            painter.drawLine(x - 8, y, x - 2, y - 6)
+            painter.drawLine(x - 8, y, x - 2, y + 6)
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor('#78c8ff'))
+            tab = QPainterPath()
+            tab.moveTo(x - 11, y - 8)
+            tab.lineTo(x - 3, y - 8)
+            tab.lineTo(x, y - 5)
+            tab.lineTo(x + 11, y - 5)
+            tab.lineTo(x + 11, y + 8)
+            tab.lineTo(x - 11, y + 8)
+            tab.closeSubpath()
+            painter.drawPath(tab)
+            painter.setPen(QPen(QColor('#258bc8'), 1))
+            painter.setBrush(QColor('#49b0f1'))
+            painter.drawRoundedRect(x - 11, y - 3, 22, 12, 2, 2)
+        painter.end()
+
     def dragEnterEvent(self, event):
         if event.source() is self.grid:
             event.acceptProposedAction()
@@ -856,7 +951,7 @@ class Separator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f'Separare Clipuri {VERSION}'.strip())
-        for folder in (DATA, THUMBS):
+        for folder in (DATA, THUMBS, LUT_LIBRARY):
             folder.mkdir(parents=True, exist_ok=True)
         self.settings = load_json(SETTINGS_FILE, {})
         self.settings.setdefault('sabloane', TEMPLATES)
@@ -865,6 +960,8 @@ class Separator(QMainWindow):
             # LUT-ul Sony din Premiere, daca exista, pentru clipurile S-Log3 (S-Gamut3.Cine)
             sony = Path(premiere_luts()) / '1_SGamut3CineSLog3_To_LC-709.cube'
             self.settings['lut_gamma'] = {'s-log3-cine': str(sony)} if sony.exists() else {}
+        bundled_default = LUT_LIBRARY / '1_SGamut3CineSLog3_To_LC-709.cube'
+        self.settings.setdefault('lut_implicit', str(bundled_default) if bundled_default.exists() else '')
         self.meta = load_json(META_FILE, {})
         self.thumb_w = int(self.settings.get('marime', 260))
         self.source = None          # folderul cu clipuri nesortate
@@ -900,7 +997,9 @@ class Separator(QMainWindow):
         self.move_pool.setMaxThreadCount(1)   # mutarile ruleaza in ordine, una dupa alta
         QPixmapCache.setCacheLimit(300 * 1024)
 
+        self.transfers_enabled = False
         self.build_ui()
+        self.set_transfer_mode(False)
         self.setAcceptDrops(True)
         geometry = self.settings.get('geometrie')
         if geometry:
@@ -999,10 +1098,20 @@ class Separator(QMainWindow):
         left.setMinimumWidth(240)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 6, 0)
+        self.transfer_toggle = QPushButton('Rasfoire · mutari blocate')
+        self.transfer_toggle.setCheckable(True)
+        self.transfer_toggle.setMinimumHeight(44)
+        self.transfer_toggle.setToolTip('Oprit: doar rasfoiesti. Pornit: permiti mutari prin click, taste sau drag & drop. La pornire si la schimbarea proiectului revine pe Rasfoire.')
+        self.transfer_toggle.setStyleSheet('QPushButton {background:#dcebf3; color:#173b50; border:2px solid #7cb5d4; font-weight:bold;} QPushButton:checked {background:#7b481a; color:white; border:2px solid #ffc36d;}')
+        self.transfer_toggle.toggled.connect(self.set_transfer_mode)
+        ll.addWidget(self.transfer_toggle)
+        self.btn(ll, "Pregătire eveniment…", self.event_setup)
         head = QLabel('MUTA IN FOLDER')
+        self.folder_head = head
         head.setStyleSheet('color:#9aa8b6; font-weight:bold;')
         ll.addWidget(head)
-        hint = QLabel('Selectezi clipurile, apoi click pe folder, tasta lui sau tragi clipurile peste el.')
+        hint = QLabel('')
+        self.folder_hint = hint
         hint.setWordWrap(True)
         hint.setStyleSheet('color:#7d8a98; font-size:11px;')
         ll.addWidget(hint)
@@ -1091,8 +1200,13 @@ class Separator(QMainWindow):
         rl.addWidget(self.wave)
         controls = QHBoxLayout()
         rl.addLayout(controls)
-        self.play_btn = self.btn(controls, 'Reda / Pauza', self.toggle_play)
-        self.play_btn.setToolTip('Spatiu')
+        self.play_btn = self.btn(controls, 'Reda', self.toggle_play)
+        self.play_icons = {False: playback_icon(False), True: playback_icon(True)}
+        self.play_btn.setIconSize(QSize(28, 28))
+        self.play_btn.setMinimumHeight(40)
+        if QMediaPlayer:
+            self.player.playbackStateChanged.connect(self.update_play_button)
+        self.update_play_button()
         self.btn(controls, 'Sunet (Q)', self.play_loudest).setToolTip('Q · reda de la cea mai puternica parte a sunetului (discurs, muzica)')
         self.time_label = QLabel('0:00 / 0:00')
         controls.addWidget(self.time_label)
@@ -1124,10 +1238,11 @@ class Separator(QMainWindow):
         self.lut_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.lut_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.lut_box.setMinimumContentsLength(14)
-        self.lut_box.setToolTip('LUT-ul proiectului, pentru clipurile log fara gamma cunoscuta. Clipurile Sony isi aleg singure\n'
-                                'LUT-ul dupa gamma (vezi "Pe camera"). Fisierele nu se modifica.')
+        self.lut_box.setToolTip('Implicit: LUT-ul salvat pentru toate proiectele, cu reguli pe camera. Fara LUT opreste complet efectul. Un LUT ales explicit se aplica previzualizarii si miniaturilor, nu fisierelor.')
         self.lut_box.activated.connect(self.lut_chosen)
         lut_row.addWidget(self.lut_box, 1)
+        self.btn(lut_row, 'Seteaza implicit', self.set_default_lut).setToolTip('Pastreaza LUT-ul ales ca implicit pentru proiecte')
+        self.btn(lut_row, 'Folder LUT', lambda: open_path(LUT_LIBRARY)).setToolTip(str(LUT_LIBRARY))
         self.btn(lut_row, 'Pe camera', self.edit_lut_rules).setToolTip('LUT diferit dupa numele fisierului, ex: DJI > LUT-ul dronei')
         self.info = QLabel('')
         self.info.setWordWrap(True)
@@ -1272,7 +1387,7 @@ class Separator(QMainWindow):
         self.lut_view.clear()
         self.wave.set_wave(None, '')
         self.rebuild_categories()
-        self.fill_lut_box(self.lut_box, '')
+        self.fill_lut_box(self.lut_box, '__implicit__')
         self.undo_btn.setEnabled(False)
         self.progress.setMaximum(1)
         self.progress.setValue(0)
@@ -1374,6 +1489,8 @@ class Separator(QMainWindow):
     def open_source(self, folder):
         if not folder or not Path(folder).is_dir():
             return
+        if self.source != Path(folder):
+            self.transfer_toggle.setChecked(False)
         self.source = Path(folder)
         projects = self.settings['proiecte']
         project = projects.get(str(self.source))
@@ -1397,11 +1514,146 @@ class Separator(QMainWindow):
         self.recent.blockSignals(False)
         self.load_undo_stack()
         self.save_settings()
-        self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
+        self.fill_lut_box(self.lut_box, self.project_lut_selection())
         self.show_folder(self.source)
 
     def project(self):
         return self.settings['proiecte'][str(self.source)]
+
+    def event_setup(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Pregătire eveniment')
+        layout = QVBoxLayout(dialog)
+        profile = QComboBox()
+        profile.addItems(['Doar creează foldere', 'Sony + RØDE + F6'])
+        layout.addWidget(QLabel('Scanarea afișează fișierele în locul lor. Sortarea mută doar pe același disc.'))
+        layout.addWidget(profile)
+
+        def folder_row(label):
+            row = QHBoxLayout()
+            field = QLineEdit()
+            field.setReadOnly(True)
+            choose = QPushButton('Alege…')
+            def pick():
+                value = QFileDialog.getExistingDirectory(dialog, label, field.text())
+                if value:
+                    field.setText(value)
+            choose.clicked.connect(pick)
+            row.addWidget(QLabel(label))
+            row.addWidget(field, 1)
+            row.addWidget(choose)
+            layout.addLayout(row)
+            return field, choose
+
+        source, source_btn = folder_row('Scanează folderul')
+        dest, dest_btn = folder_row('Folderul evenimentului')
+        same = QCheckBox('Folosește folderul scanat și ca destinație')
+        same.setChecked(True)
+        layout.addWidget(same)
+        tracks = QHBoxLayout()
+        tracks.addWidget(QLabel('Piste F6:'))
+        track_boxes = {}
+        for n in (1, 2, 3, 4, 5, 6):
+            box = QCheckBox(f'Tr{n}')
+            box.setChecked(n in (1, 2, 6))
+            tracks.addWidget(box)
+            track_boxes[n] = box
+        layout.addLayout(tracks)
+        template = QComboBox()
+        templates = self.settings['sabloane']
+        template.addItems(templates)
+        template.setCurrentText('Nunta')
+        layout.addWidget(QLabel('Șablon și foldere de creat:'))
+        layout.addWidget(template)
+        cats = QListWidget()
+        layout.addWidget(cats)
+        def fill_categories():
+            cats.clear()
+            for name in templates.get(template.currentText(), []):
+                item = QListWidgetItem(name, cats)
+                item.setCheckState(Qt.CheckState.Checked)
+        fill_categories()
+        template.currentTextChanged.connect(fill_categories)
+
+        def sync():
+            scanning = profile.currentIndex() == 1
+            source_btn.setEnabled(scanning)
+            same.setEnabled(scanning)
+            for box in track_boxes.values():
+                box.setEnabled(scanning)
+            dest_btn.setEnabled(not (scanning and same.isChecked()))
+            if scanning and same.isChecked():
+                dest.setText(source.text())
+        same.toggled.connect(sync)
+        profile.currentIndexChanged.connect(sync)
+        source.textChanged.connect(sync)
+        sync()
+        actions = QHBoxLayout()
+        cancel = QPushButton('Renunță')
+        run = QPushButton('Pregătește')
+        cancel.clicked.connect(dialog.reject)
+        actions.addWidget(cancel)
+        actions.addWidget(run)
+        layout.addLayout(actions)
+
+        def prepare():
+            try:
+                if not dest.text():
+                    raise ValueError('Alege folderul principal al evenimentului.')
+                target = Path(dest.text()).resolve(strict=True)
+                names = [cats.item(i).text() for i in range(cats.count())
+                         if cats.item(i).checkState() == Qt.CheckState.Checked]
+                if any(not name or name in ('.', '..') or '/' in name or '\\' in name
+                       or name.casefold() in ('private', 'm4root', 'clip', 'f6_sd')
+                       or name.casefold().startswith('import separare ') for name in names):
+                    raise ValueError('Șablonul conține un nume de folder rezervat sau invalid.')
+                for name in names:
+                    path = target / name
+                    if path.is_symlink() or (path.exists() and not path.is_dir()):
+                        raise ValueError(f'Destinație incompatibilă: {path}')
+                files = []
+                scanning = profile.currentIndex() == 1
+                if not scanning and not names:
+                    raise ValueError('Bifează cel puțin un folder.')
+                if scanning:
+                    if not source.text():
+                        raise ValueError('Alege folderul general de scanat.')
+                    if self.moving:
+                        raise ValueError('Așteaptă terminarea mutărilor curente.')
+                    root = Path(source.text()).resolve(strict=True)
+                    files = scan_event_media(root, {n for n, box in track_boxes.items() if box.isChecked()})
+                    if not files:
+                        raise ValueError('Nu am găsit clipuri Sony, audio RØDE sau piste F6 bifate.')
+                for name in names:
+                    (target / name).mkdir(exist_ok=True)
+                if scanning:
+                    tracks_selected = [n for n, box in track_boxes.items() if box.isChecked()]
+                    project = self.settings['proiecte'].setdefault(str(root), {})
+                    project.update({
+                        'destinatie': str(target),
+                        'event_tracks': tracks_selected,
+                        'categorii': [{'nume': name, 'culoare': COLORS[i % len(COLORS)]}
+                                      for i, name in enumerate(names)],
+                    })
+                    self.transfer_toggle.setChecked(False)
+                    self.open_source(str(root))
+                elif self.source:
+                    self.dest_root = target
+                    self.project()['destinatie'] = str(target)
+                    known = {cat['nume'].casefold() for cat in self.cats}
+                    for name in names:
+                        if name.casefold() not in known:
+                            self.cats.append({'nume': name, 'culoare': COLORS[len(self.cats) % len(COLORS)]})
+                            known.add(name.casefold())
+                    self.save_settings()
+                    self.rebuild_categories()
+                self.statusBar().showMessage(f'{len(names)} foldere pregătite în {target}', 8000)
+                dialog.accept()
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(dialog, 'Pregătire eveniment', str(error))
+        run.clicked.connect(prepare)
+        dialog.resize(680, 490)
+        dialog.exec()
 
     def choose_dest(self):
         if not self.source:
@@ -1416,11 +1668,17 @@ class Separator(QMainWindow):
     def cat_dir(self, cat):
         return self.dest_root / cat['nume']
 
+    def clips_in_view(self, folder):
+        if folder == self.source and 'event_tracks' in self.project():
+            return event_clips(folder, set(self.project()['event_tracks']),
+                               {self.cat_dir(cat) for cat in self.cats})
+        return list_clips(folder)
+
     def show_folder(self, folder):
         if not folder:
             return
         self.view_dir = Path(folder)
-        clips = list_clips(self.view_dir)
+        clips = self.clips_in_view(self.view_dir)
         missing = [c for c in clips if c.key not in self.meta or 'gamma' not in self.meta[c.key]]
         if missing:
             dialog = QProgressDialog('Citesc durata si ora filmarii...', None, 0, len(missing), self)
@@ -1513,7 +1771,7 @@ class Separator(QMainWindow):
     def update_counts(self):
         if not self.source:
             return
-        left = len(list_clips(self.source)) if self.view_dir != self.source else len(self.all_clips)
+        left = len(self.clips_in_view(self.source)) if self.view_dir != self.source else len(self.all_clips)
         sorted_count = sum(count_media(self.cat_dir(c)) for c in self.cats)
         self.progress.setMaximum(max(1, left + sorted_count))
         self.progress.setValue(sorted_count)
@@ -1525,6 +1783,30 @@ class Separator(QMainWindow):
         self.dest_btn.setText(f'Destinatie: {self.dest_root.name}')
 
     # ---------- categorii
+
+    def set_transfer_mode(self, enabled):
+        self.transfers_enabled = bool(enabled)
+        self.transfer_toggle.setText('Sortare · mutari permise' if enabled else 'Rasfoire · mutari blocate')
+        self.folder_head.setText('MUTA IN FOLDER' if enabled else 'VEZI FOLDERELE')
+        self.folder_hint.setText('Selectezi clipuri, apoi apesi folderul, tasta lui sau tragi clipurile.' if enabled else
+                                 'Click pe folder: vezi clipurile in aplicatie. Finder: deschide in sistem. Mutarile prin taste si drag & drop sunt blocate.')
+        self.grid.setDragEnabled(bool(enabled))
+        self.rebuild_categories()
+        if self.moving and not enabled:
+            self.statusBar().showMessage('Mutarile noi sunt blocate; transferurile deja pornite se termina.', 6000)
+
+    def browse_folder(self, folder):
+        if not Path(folder).is_dir():
+            self.statusBar().showMessage('Folderul nu exista inca. Activeaza Sortare ca sa muti clipuri aici.', 5000)
+            return
+        self.transfer_toggle.setChecked(False)
+        self.show_folder(folder)
+
+    def category_clicked(self, index):
+        if self.transfers_enabled:
+            self.move_selection(index)
+        elif index < len(self.cats):
+            self.browse_folder(self.cat_dir(self.cats[index]))
 
     def rebuild_categories(self):
         while self.cat_layout.count():
@@ -1538,28 +1820,37 @@ class Separator(QMainWindow):
             hl.setContentsMargins(0, 0, 0, 0)
             hl.setSpacing(3)
             b = FolderButton(self.grid)
+            b.transfer_mode = self.transfers_enabled
             key = str((i + 1) % 10) if i < 10 else ' '
             n = count_media(self.cat_dir(cat))
             exists = self.cat_dir(cat).is_dir()
             b.setText(f'{key}   {cat["nume"]}' + (f'   ({n})' if n else '' if exists else '   (nou)'))
             color = QColor(cat.get('culoare', COLORS[0]))
             current = self.view_dir == self.cat_dir(cat)
-            b.setStyleSheet(f'QPushButton {{text-align:left; padding:10px 12px; font-size:14px; font-weight:bold;'
-                            f' background:{color.darker(190).name()}; border-left:6px solid {color.name()};'
-                            f' {"border:2px solid #74e1ff;" if current else ""}}}'
-                            f' QPushButton:hover, QPushButton:pressed {{background:{color.darker(120).name()};}}')
-            b.setToolTip(f'Muta selectia in {self.cat_dir(cat)}\nClick dreapta: redenumire, culoare, ordine, vezi continutul')
-            b.clicked.connect(lambda _=False, c=i: self.move_selection(c))
+            if self.transfers_enabled:
+                background, foreground, hover = color.darker(125).name(), '#ffffff', color.darker(105).name()
+            else:
+                background, foreground, hover = '#edf3f7', color.darker(160).name(), '#ffffff'
+            border = '2px solid #4a91bd' if current else '1px solid #ccd7df' if not self.transfers_enabled else '1px solid transparent'
+            b.setStyleSheet(f'QPushButton {{text-align:left; padding:10px 36px 10px 12px; font-size:14px; font-weight:bold;'
+                            f' color:{foreground}; background:{background}; border:{border}; border-left:6px solid {color.name()};}}'
+                            f' QPushButton:hover, QPushButton:pressed {{background:{hover};}}')
+            b.setAcceptDrops(self.transfers_enabled)
+            b.setToolTip((f'Muta selectia in {self.cat_dir(cat)}' if self.transfers_enabled else f'Vezi {self.cat_dir(cat)} · mutari blocate')
+                         + '\nClick dreapta: optiuni folder')
+            b.clicked.connect(lambda _=False, c=i: self.category_clicked(c))
             b.dropped.connect(lambda c=i: self.move_selection(c))
             b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda _p, c=i, w=b: self.category_menu(c, w))
             hl.addWidget(b, 1)
             eye = QToolButton()
-            eye.setText('Vezi')
+            eye.setText(ui('Finder'))
+            eye.setFixedWidth(48)
+            eye.setStyleSheet('QToolButton {font-size:10px; padding:3px; border-radius:5px;}')
             eye.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            eye.setToolTip('Arata clipurile deja mutate aici (le poti muta mai departe)')
+            eye.setToolTip(ui('Deschide acest folder in Finder. Nu muta clipuri si nu schimba modul.'))
             eye.setEnabled(exists)
-            eye.clicked.connect(lambda _=False, c=cat: self.show_folder(self.cat_dir(c)))
+            eye.clicked.connect(lambda _=False, c=cat: open_path(self.cat_dir(c)))
             eye.setMinimumHeight(42)
             hl.addWidget(eye)
             self.cat_layout.addWidget(row)
@@ -1594,7 +1885,7 @@ class Separator(QMainWindow):
     def category_menu(self, index, widget):
         cat = self.cats[index]
         menu = QMenu(self)
-        menu.addAction('Vezi continutul', lambda: self.show_folder(self.cat_dir(cat))).setEnabled(self.cat_dir(cat).is_dir())
+        menu.addAction('Vezi continutul', lambda: self.browse_folder(self.cat_dir(cat))).setEnabled(self.cat_dir(cat).is_dir())
         menu.addAction(ui('Deschide in Finder'), lambda: self.open_in_finder(self.cat_dir(cat)))
         menu.addSeparator()
         menu.addAction('Redenumeste...', lambda: self.rename_category(index))
@@ -1691,6 +1982,9 @@ class Separator(QMainWindow):
         return [self.model.clips[r] for r in rows if r < len(self.model.clips)]
 
     def move_selection(self, index):
+        if not self.transfers_enabled:
+            self.statusBar().showMessage('Mutare blocata. Activeaza Sortare deasupra folderelor pentru a muta clipuri.', 5000)
+            return
         if index >= len(self.cats):
             return
         clips = self.selected_clips()
@@ -1719,6 +2013,13 @@ class Separator(QMainWindow):
                     n += 1
                 reserved.add(str(target))
                 pairs.append((str(f), str(target)))
+        if 'event_tracks' in self.project():
+            try:
+                if any(os.stat(src).st_dev != dest.stat().st_dev for src, _ in pairs):
+                    return QMessageBox.warning(self, 'Mutare blocată',
+                                               'Alege o destinație pe același disc. Profilul nu copiază între discuri.')
+            except OSError as exc:
+                return QMessageBox.warning(self, 'Mutare', str(exc))
         self.drop_from_grid(clips)
         size = sum(c.size for c in clips)
         cross = os.stat(clips[0].path).st_dev != os.stat(dest).st_dev
@@ -1809,7 +2110,8 @@ class Separator(QMainWindow):
         self.next_batch += 1
         self.batches[bid] = batch
         self.moving += 1
-        self.move_pool.start(MoveJob(bid, batch['perechi'], label, self.signals))
+        self.move_pool.start(MoveJob(bid, batch['perechi'], label, self.signals,
+                                    allow_copy='event_tracks' not in self.project()))
 
     def move_progress(self, bid, done, total, label):
         self.statusBar().showMessage(f'Mut: {label}  {done}/{total}')
@@ -1928,23 +2230,38 @@ class Separator(QMainWindow):
                 self.statusBar().showMessage(f'LUT indisponibil: {exc}', 8000)
         return self.luts[path]
 
+    def project_lut_selection(self):
+        if not self.source:
+            return '__implicit__'
+        project = self.project()
+        mode = project.get('lut_mode')
+        if mode == 'off':
+            return '__fara__'
+        if mode == 'manual' or (mode is None and project.get('lut')):
+            return project.get('lut', '')
+        return '__implicit__'
+
     def lut_for(self, clip):
-        """LUT-ul clipului, in ordine: regula proiectului (prefix nume, model camera sau gamma),
-        LUT-ul automat pentru gamma camerei, apoi LUT-ul proiectului doar daca gamma e necunoscuta sau log."""
+        """Explicit off/manual override; default respects camera rules before the global fallback."""
         if clip.kind == 'audio' or not self.source:
             return None
+        selection = self.project_lut_selection()
+        if selection == '__fara__':
+            return None
+        if selection != '__implicit__':
+            return self.load_lut(selection)
         project = self.project()
         name, gamma, camera = clip.name.lower(), clip.gamma.lower(), clip.camera.lower()
         for rule in project.get('reguli_lut', []):
             key = rule['prefix'].lower().strip()
             if key and (name.startswith(key) or key == gamma or (len(key) >= 3 and key in camera)):
                 return self.load_lut(rule['lut'])
-        auto = self.settings.get('lut_gamma', {})
-        if gamma in auto:
-            return self.load_lut(auto[gamma])
         if gamma and 'log' not in gamma:
-            return None  # camera a filmat normal (rec709, HLG): LUT-ul de log ar strica imaginea
-        return self.load_lut(project.get('lut', ''))
+            return None
+        default = self.load_lut(self.settings.get('lut_implicit', ''))
+        if default:
+            return default
+        return self.load_lut(self.settings.get('lut_gamma', {}).get(gamma, ''))
 
     def fkey(self, clip):
         lut = self.lut_for(clip)
@@ -1953,43 +2270,95 @@ class Separator(QMainWindow):
     def fill_lut_box(self, box, selected):
         box.blockSignals(True)
         box.clear()
-        box.addItem('Fara LUT', '')
-        paths = [p for p in self.settings.get('luturi', []) if Path(p).exists()]
-        if selected and selected not in paths:
+        project_box = box is self.lut_box
+        if project_box:
+            default = self.settings.get('lut_implicit', '')
+            box.addItem('Implicit · ' + (Path(default).stem if default else 'neales'), '__implicit__')
+            box.addItem('Fara LUT', '__fara__')
+            if not selected:
+                selected = '__implicit__'
+        else:
+            box.addItem('Fara LUT', '')
+        library = [str(p) for p in sorted(LUT_LIBRARY.iterdir()) if p.is_file() and p.suffix.lower() == '.cube']
+        paths = list(dict.fromkeys(library + [p for p in self.settings.get('luturi', []) if Path(p).exists()]))
+        if selected and selected not in ('__implicit__', '__fara__') and selected not in paths:
             paths.insert(0, selected)
         for path in paths:
             box.addItem(Path(path).stem, path)
-        box.addItem('Alege fisier .cube...', '__alege__')
+        box.addItem('Incarca alt LUT (.cube)...', '__alege__')
         box.setCurrentIndex(max(0, box.findData(selected)))
         box.blockSignals(False)
 
-    def choose_lut_file(self):
-        start = self.settings.get('dir_lut') or premiere_luts()
-        path, _ = QFileDialog.getOpenFileName(self, 'Alege LUT-ul (.cube)', start, 'LUT 3D (*.cube *.CUBE)')
-        if not path or not self.load_lut(path):
+    def import_lut(self, path):
+        lut = self.load_lut(str(path))
+        if not lut:
             return None
-        self.settings['dir_lut'] = str(Path(path).parent)
-        self.settings['luturi'] = [path] + [p for p in self.settings.get('luturi', []) if p != path][:7]
-        return path
+        source = Path(path)
+        target = LUT_LIBRARY / (clean_name(source.stem) + '.cube')
+        if target.exists() and target.read_bytes() != source.read_bytes():
+            target = target.with_name(target.stem + '-' + lut.tag + '.cube')
+        if source.resolve() != target.resolve():
+            if not target.exists():
+                shutil.copy2(source, target)
+            elif target.read_bytes() != source.read_bytes():
+                raise ValueError('Exista un LUT diferit cu acelasi nume; nu il suprascriu.')
+        internal = str(target)
+        self.settings['luturi'] = list(dict.fromkeys([internal] + self.settings.get('luturi', [])))
+        return internal
+
+    def choose_lut_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Alege LUT-ul (.cube)', str(LUT_LIBRARY), 'LUT 3D (*.cube *.CUBE)')
+        if not path:
+            return None
+        try:
+            return self.import_lut(path)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage('Nu pot importa LUT-ul: ' + str(error), 8000)
+            return None
 
     def lut_chosen(self, index):
-        if not self.source:
-            return self.fill_lut_box(self.lut_box, '')
         path = self.lut_box.itemData(index)
         if path == '__alege__':
             path = self.choose_lut_file()
             if path is None:
-                return self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
+                return self.fill_lut_box(self.lut_box, self.project_lut_selection())
         self.set_project_lut(path)
 
     def set_project_lut(self, path):
-        if path and not self.load_lut(path):
-            return self.fill_lut_box(self.lut_box, self.project().get('lut', ''))
-        self.project()['lut'] = path
-        if path:
-            self.settings['luturi'] = [path] + [p for p in self.settings.get('luturi', []) if p != path][:7]
+        if path not in ('__implicit__', '__fara__', '') and not self.load_lut(path):
+            return self.fill_lut_box(self.lut_box, self.project_lut_selection())
+        if not self.source:
+            if path not in ('__implicit__', '__fara__', ''):
+                self.settings['lut_implicit'] = path
+                self.save_settings()
+            self.fill_lut_box(self.lut_box, '__implicit__')
+            return
+        mode = 'default' if path == '__implicit__' else 'off' if path in ('__fara__', '') else 'manual'
+        self.project()['lut_mode'] = mode
+        self.project()['lut'] = path if mode == 'manual' else ''
         self.save_settings()
-        self.fill_lut_box(self.lut_box, path)
+        self.fill_lut_box(self.lut_box, self.project_lut_selection())
+        self.apply_lut_change()
+
+    def set_default_lut(self):
+        path = self.lut_box.currentData()
+        if path in ('__implicit__', '__fara__', '__alege__', '', None):
+            path = self.choose_lut_file()
+        if not path:
+            return
+        try:
+            path = self.import_lut(path)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(str(error), 8000)
+            return
+        if not path:
+            return
+        self.settings['lut_implicit'] = path
+        if self.source:
+            self.project()['lut_mode'] = 'default'
+            self.project()['lut'] = ''
+        self.save_settings()
+        self.fill_lut_box(self.lut_box, '__implicit__')
         self.apply_lut_change()
 
     def apply_lut_change(self):
@@ -2248,6 +2617,13 @@ class Separator(QMainWindow):
         if self.player.duration():
             self.wave.set_position(ms / self.player.duration())
 
+    def update_play_button(self, state=None):
+        playing = bool(QMediaPlayer and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        self.play_btn.setIcon(self.play_icons[playing])
+        self.play_btn.setText('Pauza' if playing else 'Reda')
+        self.play_btn.setToolTip('Spatiu · ' + ('pune pauza' if playing else 'porneste redarea'))
+        self.play_btn.setAccessibleName('Pauza' if playing else 'Reda clipul')
+
     def toggle_play(self):
         if not QMediaPlayer:
             return self.statusBar().showMessage('Previzualizarea video nu e disponibila pe acest sistem: ' + MEDIA_ERROR, 8000)
@@ -2323,6 +2699,8 @@ class Separator(QMainWindow):
         menu.exec(self.grid.viewport().mapToGlobal(pos))
 
     def move_back_to_source(self):
+        if 'event_tracks' in self.project():
+            return self.statusBar().showMessage('Folosește Anulează ultima mutare pentru a reveni la căile originale.', 6000)
         self.cats.append({'nume': '__sursa__', 'culoare': '#000000'})
         saved_root, self.dest_root = self.dest_root, self.source.parent
         self.cats[-1]['nume'] = self.source.name
