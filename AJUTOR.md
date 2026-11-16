@@ -64,7 +64,7 @@ Plimba mouse-ul de la stanga la dreapta peste o miniatura: vezi 8 cadre din tot 
 ## LUT pentru previzualizare
 
 - **Implicit** folosește LUT-ul salvat, cu regulile **Pe cameră**. Clipurile cu profil cunoscut non-log sunt lăsate fără LUT implicit. Pentru material transcodificat, aplicația poate deduce gamma din originale după nume și durată.
-- **Fără LUT** dezactivează complet efectul pentru proiect. Alegerea explicită a unui LUT îl aplică previzualizării și miniaturilor video.
+- **Fără LUT** dezactivează complet efectul pentru proiect. Alegerea explicită a unui LUT îl aplică previzualizării și miniaturilor video, cu excepția clipurilor filmate rec709 sau HLG, care rămân fără LUT ca să nu fie stricate.
 - **Încarcă alt LUT (.cube)** permite alegerea fișierului de oriunde și îl copiază în biblioteca locală `data/luts/biblioteca/`. **Folder LUT** deschide biblioteca; **Setează implicit** păstrează LUT-ul pentru proiectele viitoare.
 - LUT-ul nu modifică fișierele video. Miniaturile colorizate se păstrează separat în cache.
 

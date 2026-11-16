@@ -276,7 +276,8 @@ try:
     w.settings['lut_implicit'] = str(inv)
     check(w.lut_for(by['URDEA0001.MP4']) is None, 'LUT-ul implicit nu strica clipurile rec709')
     w.set_project_lut(str(inv))
-    check(w.lut_for(by['URDEA0001.MP4']) is not None, 'LUT ales manual se aplica tuturor clipurilor')
+    check(w.lut_for(by['URDEA0001.MP4']) is None, 'LUT ales manual nu strica clipurile rec709')
+    check(w.lut_for(by['DAN0001.MP4']) is not None, 'LUT ales manual se aplica clipurilor log')
     w.set_project_lut('__implicit__')
     w.project()['reguli_lut'] = [{'prefix': 'ZV-E1', 'lut': ''}]
     check(w.lut_for(by['DAN0001.MP4']) is None, 'regula dupa modelul camerei')

@@ -2604,10 +2604,13 @@ class Separator(QMainWindow):
         selection = self.project_lut_selection()
         if selection == '__fara__':
             return None
+        name, gamma, camera = clip.name.lower(), clip.gamma.lower(), clip.camera.lower()
         if selection != '__implicit__':
+            # camera a filmat normal (rec709, HLG): LUT-ul de log ar strica imaginea
+            if gamma and 'log' not in gamma:
+                return None
             return self.load_lut(selection)
         project = self.project()
-        name, gamma, camera = clip.name.lower(), clip.gamma.lower(), clip.camera.lower()
         for rule in project.get('reguli_lut', []):
             key = rule['prefix'].lower().strip()
             if key and (name.startswith(key) or key == gamma or (len(key) >= 3 and key in camera)):
