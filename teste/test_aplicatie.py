@@ -52,6 +52,15 @@ for i, t in enumerate(['10:00:00', '10:01:10', '10:02:30', '11:30:00', '11:31:00
         raise RuntimeError('ffmpeg nu a creat clipurile de test: ' + made.stderr)
 (src / 'DAN0001.XML').write_text('x')
 app = QApplication([]); app.setStyleSheet(main.STYLE)
+
+# aplicatia porneste in Rasfoire (mutari blocate); testul lucreaza in Sortare
+_open_source = main.Separator.open_source
+def open_and_sort(self, *args, **kwargs):
+    result = _open_source(self, *args, **kwargs)
+    self.transfer_toggle.setChecked(True)
+    return result
+main.Separator.open_source = open_and_sort
+
 w = main.Separator(); w.resize(1500, 900); w.show()
 w.open_source(str(src))
 
@@ -179,7 +188,7 @@ try:
     w.restore_selection({src2 / 'V3.MP4'})
     check(w.sync_follow == {by['ZOOM0002.WAV'].key}, 'audio partial devine SYNC la ultimul clip')
     w.move_selection(1); wait(lambda: not w.moving)
-    check(w.report_box.isVisible() and 'Biserica: 2' in w.report_box.text(), 'rezumat la final, cu audio numarat')
+    check(w.report_box.isVisible() and 'Biserica: 2' in w.report_box.informativeText(), 'rezumat la final, cu audio numarat')
     w.report_box.close()
     check(sorted(p.name for p in (TMP / 'proiect2' / 'Biserica').iterdir()) == ['V3.MP4', 'ZOOM0002.WAV'], 'audio lung mutat cu ultimul clip')
     w.undo(); wait(lambda: not w.moving)
@@ -217,6 +226,8 @@ try:
     if not shown:  # depinde de redarea video a sistemului; pe serverele de build poate lipsi
         print('INFO previzualizarea cu LUT nu a primit cadre in 15 s', flush=True)
         report(f'{sys.platform}: previzualizarea cu LUT nu a primit cadre', 'warning')
+    # LUT ales manual are prioritate; regulile pe camera lucreaza in modul Implicit
+    w.set_project_lut('__implicit__')
     w.project()['reguli_lut'] = [{'prefix': 'v3', 'lut': ''}]
     w.apply_lut_change()
     check(w.fkey(v3) == v3.key and w.preview_stack.currentIndex() == 0, 'regula pe camera: fara LUT pentru V3')
@@ -262,11 +273,15 @@ try:
     check(w.lut_for(by['DAN0001.MP4']) is not None and w.lut_for(by['DAN0001.MP4']).tag == tag, 'S-Log3 primeste LUT automat')
     check(w.lut_for(by['URDEA0001.MP4']) is None, 'rec709 ramane fara LUT')
     check('SLOG3' in by['DAN0001.MP4'].badge(), f'eticheta SLOG3 pe miniatura ({by["DAN0001.MP4"].badge()})')
+    w.settings['lut_implicit'] = str(inv)
+    check(w.lut_for(by['URDEA0001.MP4']) is None, 'LUT-ul implicit nu strica clipurile rec709')
     w.set_project_lut(str(inv))
-    check(w.lut_for(by['URDEA0001.MP4']) is None, 'LUT-ul proiectului nu strica clipurile rec709')
+    check(w.lut_for(by['URDEA0001.MP4']) is not None, 'LUT ales manual se aplica tuturor clipurilor')
+    w.set_project_lut('__implicit__')
     w.project()['reguli_lut'] = [{'prefix': 'ZV-E1', 'lut': ''}]
     check(w.lut_for(by['DAN0001.MP4']) is None, 'regula dupa modelul camerei')
     w.project()['reguli_lut'] = []
+    w.settings['lut_implicit'] = ''
     w.open_source(str(src4))
     by = {c.name: c for c in w.all_clips}
     check(by['DAN0001.MP4'].gamma == 's-log3-cine' and by['DAN0001.MP4'].gamma_guess and w.lut_for(by['DAN0001.MP4']) is not None,
